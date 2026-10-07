@@ -54,7 +54,7 @@ function createDesktopApi() {
     cancelExport: vi.fn().mockResolvedValue(undefined),
     onExportProgress: vi.fn().mockImplementation(() => () => undefined),
     onExportFinished: vi.fn().mockImplementation(() => () => undefined),
-    onMenuOpenVideo: vi.fn().mockImplementation(() => () => undefined),
+    onMenuVideoSelected: vi.fn().mockImplementation(() => () => undefined),
   };
 }
 
@@ -135,26 +135,37 @@ describe('App media import and freeze review flow', () => {
     expect(pauseSpy).toHaveBeenCalledOnce();
   });
 
-  it('imports a local MP4 from the native File menu event', async () => {
+  it('processes the MP4 selected by the native File menu without reopening the dialog', async () => {
     const desktopApi = createDesktopApi();
-    let menuOpenListener: (() => void) | null = null;
-    desktopApi.onMenuOpenVideo.mockImplementation((listener: () => void) => {
-      menuOpenListener = listener;
-      return () => undefined;
-    });
+    let menuSelectionListener:
+      | ((selection: { path: string; name: string; sourceUrl: string }) => void)
+      | null = null;
+
+    desktopApi.onMenuVideoSelected.mockImplementation(
+      (listener: (selection: { path: string; name: string; sourceUrl: string }) => void) => {
+        menuSelectionListener = listener;
+        return () => undefined;
+      },
+    );
     window.desktopApi = desktopApi;
 
     render(<App />);
 
-    expect(desktopApi.onMenuOpenVideo).toHaveBeenCalledOnce();
-    expect(menuOpenListener).not.toBeNull();
+    expect(desktopApi.onMenuVideoSelected).toHaveBeenCalledOnce();
+    expect(menuSelectionListener).not.toBeNull();
 
-    menuOpenListener!();
+    menuSelectionListener!({
+      path: 'C:\\Videos\\menu-demo.mp4',
+      name: 'menu-demo.mp4',
+      sourceUrl: 'app-media://video/menu-token',
+    });
 
     await waitFor(() => {
-      expect(desktopApi.openVideo).toHaveBeenCalledOnce();
+      expect(desktopApi.probeMedia).toHaveBeenCalledWith('C:\\Videos\\menu-demo.mp4');
       expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
     });
+
+    expect(desktopApi.openVideo).not.toHaveBeenCalled();
   });
 
   it('keeps the empty state when the file dialog is cancelled', async () => {

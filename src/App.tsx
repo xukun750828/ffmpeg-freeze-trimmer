@@ -70,10 +70,10 @@ export default function App() {
     const api = window.desktopApi;
     if (!api) return;
 
-    return api.onMenuOpenVideo(() => {
-      void handleOpenVideo();
+    return api.onMenuVideoSelected((selected) => {
+      void handleSelectedVideo(selected);
     });
-  }, [exportStatus, media, detectionOptions]);
+  }, [exportStatus, detectionOptions]);
 
   const mediaSummary = useMemo(() => {
     if (!media) return null;
@@ -120,6 +120,32 @@ export default function App() {
     }
   }
 
+  async function handleSelectedVideo(selected: OpenVideoResult) {
+    if (!window.desktopApi || exportStatus === 'exporting') return;
+
+    setStatus('opening');
+    setError(null);
+    setExportMessage(null);
+
+    try {
+      const probed = await window.desktopApi.probeMedia(selected.path);
+      setSelection(selected);
+      setMedia(probed);
+      setCurrentTimeSec(0);
+      setIntervals([]);
+      setActiveIntervalId(null);
+      setPreviewEndSec(null);
+      setExportStatus('idle');
+      setExportProgress(0);
+      setStatus('ready');
+
+      await runDetection(selected, probed);
+    } catch (caught) {
+      setError(getUserFriendlyError(caught, '打开视频失败'));
+      setStatus('failed');
+    }
+  }
+
   async function handleOpenVideo() {
     if (!window.desktopApi || exportStatus === 'exporting') return;
 
@@ -134,18 +160,7 @@ export default function App() {
         return;
       }
 
-      const probed = await window.desktopApi.probeMedia(selected.path);
-      setSelection(selected);
-      setMedia(probed);
-      setCurrentTimeSec(0);
-      setIntervals([]);
-      setActiveIntervalId(null);
-      setPreviewEndSec(null);
-      setExportStatus('idle');
-      setExportProgress(0);
-      setStatus('ready');
-
-      await runDetection(selected, probed);
+      await handleSelectedVideo(selected);
     } catch (caught) {
       setError(getUserFriendlyError(caught, '打开视频失败'));
       setStatus('failed');

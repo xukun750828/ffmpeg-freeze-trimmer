@@ -65,7 +65,10 @@ app.whenReady().then(() => {
   registerMediaProtocol();
 
   ipcMain.handle('app:get-version', () => app.getVersion());
-  ipcMain.handle('media:open', () => openVideoDialog());
+  ipcMain.handle('media:open', (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    return openVideoDialog(parentWindow);
+  });
   ipcMain.handle('media:probe', (_event, mediaPath: string) => probeMedia(mediaPath));
   ipcMain.handle(
     'freeze:detect',

@@ -1,4 +1,5 @@
 import { Menu, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
+import { openVideoDialog } from './media/media-importer';
 
 export function installApplicationMenu(window: BrowserWindow): void {
   const template: MenuItemConstructorOptions[] = [
@@ -8,9 +9,14 @@ export function installApplicationMenu(window: BrowserWindow): void {
         {
           label: '导入本地 MP4…',
           accelerator: 'CmdOrCtrl+O',
-          click: () => {
-            if (!window.isDestroyed()) {
-              window.webContents.send('menu:open-video');
+          click: async () => {
+            if (window.isDestroyed()) return;
+
+            window.focus();
+            const selected = await openVideoDialog(window);
+
+            if (selected && !window.isDestroyed()) {
+              window.webContents.send('menu:video-selected', selected);
             }
           },
         },

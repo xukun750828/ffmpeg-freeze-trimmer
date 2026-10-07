@@ -21,7 +21,7 @@ export interface DesktopApi {
   cancelExport(jobId: string): Promise<void>;
   onExportProgress(listener: (event: ExportProgressEvent) => void): () => void;
   onExportFinished(listener: (event: ExportFinishedEvent) => void): () => void;
-  onMenuOpenVideo(listener: () => void): () => void;
+  onMenuVideoSelected(listener: (selection: OpenVideoResult) => void): () => void;
 }
 
 const desktopApi: DesktopApi = {
@@ -50,10 +50,11 @@ const desktopApi: DesktopApi = {
     ipcRenderer.on('export:finished', handler);
     return () => ipcRenderer.removeListener('export:finished', handler);
   },
-  onMenuOpenVideo: (listener) => {
-    const handler = () => listener();
-    ipcRenderer.on('menu:open-video', handler);
-    return () => ipcRenderer.removeListener('menu:open-video', handler);
+  onMenuVideoSelected: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, selection: OpenVideoResult) =>
+      listener(selection);
+    ipcRenderer.on('menu:video-selected', handler);
+    return () => ipcRenderer.removeListener('menu:video-selected', handler);
   },
 };
 

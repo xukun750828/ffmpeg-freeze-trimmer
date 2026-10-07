@@ -24,7 +24,7 @@ declare global {
       cancelExport(jobId: string): Promise<void>;
       onExportProgress(listener: (event: ExportProgressEvent) => void): () => void;
       onExportFinished(listener: (event: ExportFinishedEvent) => void): () => void;
-      onMenuOpenVideo(listener: () => void): () => void;
+      onMenuVideoSelected(listener: (selection: OpenVideoResult) => void): () => void;
     };
   }
 }
