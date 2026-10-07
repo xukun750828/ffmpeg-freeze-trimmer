@@ -21,7 +21,15 @@ button {
   border: 1px solid #3a3f49;
   border-radius: 8px;
   padding: 10px 16px;
+  color: #f8fafc;
+  background: #242933;
   font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .app-shell {
@@ -33,6 +41,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 24px;
   margin-bottom: 20px;
 }
 
@@ -49,6 +58,24 @@ button {
   letter-spacing: 0.14em;
 }
 
+.file-name {
+  max-width: 760px;
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #cbd5e1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-banner {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  color: #fecaca;
+  background: #3f1518;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -59,14 +86,40 @@ button {
   background: #181b21;
 }
 
+.player-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  background: #0c0e12;
+}
+
+.video-player {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  object-fit: contain;
+  background: #050608;
+}
+
 .player-placeholder {
   display: grid;
+  min-height: 580px;
+  flex: 1;
   place-items: center;
   align-content: center;
   gap: 8px;
-  min-height: 620px;
   color: #d1d5db;
-  background: #0c0e12;
+}
+
+.player-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-top: 1px solid #222630;
+  color: #aeb6c4;
+  font-size: 13px;
 }
 
 .side-panel {
@@ -75,5 +128,37 @@ button {
 }
 
 .side-panel h2 {
-  margin-top: 0;
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.side-panel p {
+  color: #9ca3af;
+  line-height: 1.6;
+}
+
+.media-info {
+  margin: 0;
+}
+
+.media-info > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #272c35;
+}
+
+.media-info dt {
+  color: #8f98a7;
+}
+
+.media-info dd {
+  margin: 0;
+  color: #e5e7eb;
+  text-align: right;
+}
+
+.next-step {
+  margin-top: 28px;
 }
