@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { access, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { resolveFfmpegPath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import { buildTrimConcatFilter } from './filter-builder';
 import { buildExportArgs, parseFfmpegOutTimeSec } from './ffmpeg-export';
@@ -104,7 +105,7 @@ export class VideoExporter {
     onFinished: FinishedListener,
   ): Promise<void> {
     try {
-      const executable = process.env.FFMPEG_PATH || 'ffmpeg';
+      const executable = resolveFfmpegPath();
       const args = buildExportArgs(
         request.inputPath,
         tempOutputPath,

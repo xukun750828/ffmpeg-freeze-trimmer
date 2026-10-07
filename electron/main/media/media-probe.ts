@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { resolveFfprobePath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import type { MediaInfo } from './types';
 
@@ -85,7 +86,7 @@ async function validateInputPath(filePath: string): Promise<void> {
 export async function probeMedia(filePath: string): Promise<MediaInfo> {
   await validateInputPath(filePath);
 
-  const executable = process.env.FFPROBE_PATH || 'ffprobe';
+  const executable = resolveFfprobePath();
   const result = await runProcess(executable, [
     '-v',
     'error',

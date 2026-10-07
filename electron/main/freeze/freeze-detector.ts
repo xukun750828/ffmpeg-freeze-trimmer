@@ -1,3 +1,4 @@
+import { resolveFfmpegPath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import { FreezeParser } from './freeze-parser';
 import type { DetectionOptions, FreezeInterval } from './types';
@@ -29,7 +30,7 @@ export async function detectFreezes(
   signal?: AbortSignal,
 ): Promise<FreezeInterval[]> {
   const parser = new FreezeParser();
-  const executable = process.env.FFMPEG_PATH || 'ffmpeg';
+  const executable = resolveFfmpegPath();
 
   const result = await runProcess(
     executable,
