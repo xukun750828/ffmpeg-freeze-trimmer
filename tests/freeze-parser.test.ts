@@ -6,6 +6,7 @@ import {
   buildFastFreezeDetectArgs,
   buildFreezeDetectArgs,
   buildRefineFreezeDetectArgs,
+  buildRefinementWindows,
   getFastScanProfile,
 } from '../electron/main/freeze/freeze-detector';
 
@@ -114,5 +115,50 @@ describe('freeze detection argument builders', () => {
       'C:\\Videos\\demo.mp4',
     ]);
     expect(args).toContain('freezedetect=n=0.003:d=2');
+  });
+
+  it('merges overlapping boundary refinement windows across nearby candidates', () => {
+    const candidates = [
+      {
+        id: 'freeze-0001',
+        startSec: 10,
+        endSec: 14,
+        durationSec: 4,
+        selectedForRemoval: false,
+      },
+      {
+        id: 'freeze-0002',
+        startSec: 15,
+        endSec: 18,
+        durationSec: 3,
+        selectedForRemoval: false,
+      },
+    ];
+
+    const windows = buildRefinementWindows(candidates, 60, options);
+
+    expect(windows.length).toBeLessThan(4);
+    expect(windows.flatMap((window) => window.boundaries)).toHaveLength(4);
+    expect(
+      windows.every((window) => window.endSec - window.startSec <= 12),
+    ).toBe(true);
+  });
+
+  it('keeps distant boundaries separate instead of decoding a long static span', () => {
+    const candidates = [
+      {
+        id: 'freeze-0001',
+        startSec: 5,
+        endSec: 300,
+        durationSec: 295,
+        selectedForRemoval: false,
+      },
+    ];
+
+    const windows = buildRefinementWindows(candidates, 360, options);
+
+    expect(windows).toHaveLength(2);
+    expect(windows[0].endSec - windows[0].startSec).toBeLessThan(6);
+    expect(windows[1].endSec - windows[1].startSec).toBeLessThan(6);
   });
 });

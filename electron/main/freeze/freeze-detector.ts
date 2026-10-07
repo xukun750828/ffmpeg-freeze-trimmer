@@ -6,10 +6,33 @@ import type { DetectionOptions, FreezeInterval } from './types';
 const FAST_SCAN_THRESHOLD_SEC = 30;
 const FAST_SCAN_HEIGHT = 360;
 const REFINE_MARGIN_SEC = 1.25;
+const REFINE_WINDOW_MERGE_GAP_SEC = 0.5;
+const MAX_REFINEMENT_WINDOW_SEC = 12;
+const REFINE_MATCH_TOLERANCE_SEC = 2.5;
 
 export interface FastScanProfile {
   fps: number;
   height: number;
+}
+
+type BoundaryKind = 'start' | 'end';
+
+export interface RefinementBoundaryRef {
+  candidateIndex: number;
+  kind: BoundaryKind;
+  targetSec: number;
+}
+
+export interface RefinementWindow {
+  startSec: number;
+  endSec: number;
+  boundaries: RefinementBoundaryRef[];
+}
+
+interface CandidateRefinement {
+  startSec?: number;
+  endSec?: number;
+  confirmed: boolean;
 }
 
 export function getFastScanProfile(options: DetectionOptions): FastScanProfile {
@@ -127,118 +150,213 @@ function globalizeIntervals(
   }));
 }
 
-function closestByStart(
+function closestBoundary(
   intervals: FreezeInterval[],
+  kind: BoundaryKind,
   targetSec: number,
-): FreezeInterval | undefined {
-  return [...intervals].sort(
-    (a, b) =>
-      Math.abs(a.startSec - targetSec) - Math.abs(b.startSec - targetSec),
-  )[0];
+): number | undefined {
+  const values = intervals.map((interval) =>
+    kind === 'start' ? interval.startSec : interval.endSec,
+  );
+
+  let closest: number | undefined;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (const value of values) {
+    const distance = Math.abs(value - targetSec);
+    if (distance < closestDistance) {
+      closest = value;
+      closestDistance = distance;
+    }
+  }
+
+  if (closest === undefined || closestDistance > REFINE_MATCH_TOLERANCE_SEC) {
+    return undefined;
+  }
+
+  return closest;
 }
 
-function closestByEnd(
-  intervals: FreezeInterval[],
-  targetSec: number,
-): FreezeInterval | undefined {
-  return [...intervals].sort(
-    (a, b) =>
-      Math.abs(a.endSec - targetSec) - Math.abs(b.endSec - targetSec),
-  )[0];
+function buildRawRefinementWindows(
+  candidates: FreezeInterval[],
+  mediaDurationSec: number,
+  options: DetectionOptions,
+): RefinementWindow[] {
+  const boundarySpanSec = options.minDurationSec + REFINE_MARGIN_SEC;
+  const windows: RefinementWindow[] = [];
+
+  candidates.forEach((candidate, candidateIndex) => {
+    const startWindowStart = Math.max(0, candidate.startSec - REFINE_MARGIN_SEC);
+    const startWindowEnd = Math.min(
+      mediaDurationSec,
+      candidate.startSec + boundarySpanSec,
+    );
+
+    windows.push({
+      startSec: startWindowStart,
+      endSec: startWindowEnd,
+      boundaries: [
+        {
+          candidateIndex,
+          kind: 'start',
+          targetSec: candidate.startSec,
+        },
+      ],
+    });
+
+    const endWindowStart = Math.max(
+      0,
+      candidate.endSec - boundarySpanSec,
+    );
+    const endWindowEnd = Math.min(
+      mediaDurationSec,
+      candidate.endSec + REFINE_MARGIN_SEC,
+    );
+
+    windows.push({
+      startSec: endWindowStart,
+      endSec: endWindowEnd,
+      boundaries: [
+        {
+          candidateIndex,
+          kind: 'end',
+          targetSec: candidate.endSec,
+        },
+      ],
+    });
+  });
+
+  return windows.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
 }
 
-async function refineCandidate(
+export function buildRefinementWindows(
+  candidates: FreezeInterval[],
+  mediaDurationSec: number,
+  options: DetectionOptions,
+): RefinementWindow[] {
+  const raw = buildRawRefinementWindows(candidates, mediaDurationSec, options);
+  const merged: RefinementWindow[] = [];
+
+  for (const window of raw) {
+    const current = merged.at(-1);
+    if (!current) {
+      merged.push({
+        startSec: window.startSec,
+        endSec: window.endSec,
+        boundaries: [...window.boundaries],
+      });
+      continue;
+    }
+
+    const mergedEnd = Math.max(current.endSec, window.endSec);
+    const mergedDuration = mergedEnd - current.startSec;
+    const closeEnough =
+      window.startSec <= current.endSec + REFINE_WINDOW_MERGE_GAP_SEC;
+
+    if (closeEnough && mergedDuration <= MAX_REFINEMENT_WINDOW_SEC) {
+      current.endSec = mergedEnd;
+      current.boundaries.push(...window.boundaries);
+      continue;
+    }
+
+    merged.push({
+      startSec: window.startSec,
+      endSec: window.endSec,
+      boundaries: [...window.boundaries],
+    });
+  }
+
+  return merged;
+}
+
+async function refineCandidatesByMergedWindows(
   inputPath: string,
   mediaDurationSec: number,
-  candidate: FreezeInterval,
+  candidates: FreezeInterval[],
   options: DetectionOptions,
   signal?: AbortSignal,
-): Promise<FreezeInterval | null> {
-  const boundarySpanSec = options.minDurationSec + REFINE_MARGIN_SEC;
-  const startWindowStart = Math.max(0, candidate.startSec - REFINE_MARGIN_SEC);
-  const startWindowEnd = Math.min(
+): Promise<FreezeInterval[]> {
+  const refinements: CandidateRefinement[] = candidates.map(() => ({
+    confirmed: false,
+  }));
+  const windows = buildRefinementWindows(
+    candidates,
     mediaDurationSec,
-    candidate.startSec + boundarySpanSec,
-  );
-  const endWindowStart = Math.max(
-    0,
-    candidate.endSec - boundarySpanSec,
-  );
-  const endWindowEnd = Math.min(
-    mediaDurationSec,
-    candidate.endSec + REFINE_MARGIN_SEC,
+    options,
   );
 
-  let startMatches: FreezeInterval[];
-  let endMatches: FreezeInterval[];
+  for (const window of windows) {
+    if (signal?.aborted) {
+      throw new Error('PROCESS_ABORTED');
+    }
 
-  if (endWindowStart <= startWindowEnd) {
-    const combinedStart = Math.min(startWindowStart, endWindowStart);
-    const combinedEnd = Math.max(startWindowEnd, endWindowEnd);
+    const durationSec = window.endSec - window.startSec;
+    if (durationSec <= 0) {
+      continue;
+    }
+
     const local = await runDetectionPass(
       buildRefineFreezeDetectArgs(
         inputPath,
-        combinedStart,
-        combinedEnd - combinedStart,
+        window.startSec,
+        durationSec,
         options,
       ),
-      combinedEnd - combinedStart,
+      durationSec,
       signal,
     );
+    const global = globalizeIntervals(local, window.startSec);
 
-    const global = globalizeIntervals(local, combinedStart);
-    startMatches = global;
-    endMatches = global;
-  } else {
-    const [startLocal, endLocal] = await Promise.all([
-      runDetectionPass(
-        buildRefineFreezeDetectArgs(
-          inputPath,
-          startWindowStart,
-          startWindowEnd - startWindowStart,
-          options,
-        ),
-        startWindowEnd - startWindowStart,
-        signal,
-      ),
-      runDetectionPass(
-        buildRefineFreezeDetectArgs(
-          inputPath,
-          endWindowStart,
-          endWindowEnd - endWindowStart,
-          options,
-        ),
-        endWindowEnd - endWindowStart,
-        signal,
-      ),
-    ]);
+    for (const boundary of window.boundaries) {
+      const refinedBoundary = closestBoundary(
+        global,
+        boundary.kind,
+        boundary.targetSec,
+      );
 
-    startMatches = globalizeIntervals(startLocal, startWindowStart);
-    endMatches = globalizeIntervals(endLocal, endWindowStart);
+      if (refinedBoundary === undefined) {
+        continue;
+      }
+
+      const refinement = refinements[boundary.candidateIndex];
+      refinement.confirmed = true;
+
+      if (boundary.kind === 'start') {
+        refinement.startSec = refinedBoundary;
+      } else {
+        refinement.endSec = refinedBoundary;
+      }
+    }
   }
 
-  const startMatch = closestByStart(startMatches, candidate.startSec);
-  const endMatch = closestByEnd(endMatches, candidate.endSec);
+  const refined: FreezeInterval[] = [];
 
-  // The low-resolution pass can produce false positives after downscaling.
-  // Require at least one original-resolution boundary window to confirm it.
-  if (!startMatch && !endMatch) {
-    return null;
-  }
+  candidates.forEach((candidate, index) => {
+    const refinement = refinements[index];
+    if (!refinement.confirmed) {
+      return;
+    }
 
-  const startSec = startMatch?.startSec ?? candidate.startSec;
-  const endSec = endMatch?.endSec ?? candidate.endSec;
+    const startSec = refinement.startSec ?? candidate.startSec;
+    const endSec = refinement.endSec ?? candidate.endSec;
 
-  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
-    return null;
-  }
+    if (
+      !Number.isFinite(startSec) ||
+      !Number.isFinite(endSec) ||
+      endSec <= startSec
+    ) {
+      return;
+    }
 
-  return {
-    ...candidate,
-    startSec,
-    endSec,
-    durationSec: endSec - startSec,
-  };
+    refined.push({
+      ...candidate,
+      startSec,
+      endSec,
+      durationSec: endSec - startSec,
+    });
+  });
+
+  return refined;
 }
 
 function renumberIntervals(intervals: FreezeInterval[]): FreezeInterval[] {
@@ -277,27 +395,13 @@ export async function detectFreezes(
     return [];
   }
 
-  const refined: FreezeInterval[] = [];
-
-  // Refine sequentially to avoid multiple full-resolution decoders competing
-  // for CPU and disk on long media files.
-  for (const candidate of candidates) {
-    if (signal?.aborted) {
-      throw new Error('PROCESS_ABORTED');
-    }
-
-    const interval = await refineCandidate(
-      inputPath,
-      mediaDurationSec,
-      candidate,
-      options,
-      signal,
-    );
-
-    if (interval) {
-      refined.push(interval);
-    }
-  }
+  const refined = await refineCandidatesByMergedWindows(
+    inputPath,
+    mediaDurationSec,
+    candidates,
+    options,
+    signal,
+  );
 
   return renumberIntervals(refined);
 }
