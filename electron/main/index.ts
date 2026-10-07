@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, protocol } from 'electron';
 import path from 'node:path';
+import { detectFreezes } from './freeze/freeze-detector';
+import type { DetectionOptions } from './freeze/types';
 import { openVideoDialog } from './media/media-importer';
 import { probeMedia } from './media/media-probe';
 import { clearMediaRegistry, registerMediaProtocol } from './media/media-protocol';
@@ -39,12 +41,48 @@ function createWindow() {
   }
 }
 
+function validateDetectionOptions(options: DetectionOptions): void {
+  if (
+    !Number.isFinite(options.noise) ||
+    options.noise <= 0 ||
+    options.noise > 1 ||
+    !Number.isFinite(options.minDurationSec) ||
+    options.minDurationSec < 0.1 ||
+    options.minDurationSec > 3600
+  ) {
+    throw new Error('INVALID_DETECTION_OPTIONS');
+  }
+}
+
 app.whenReady().then(() => {
   registerMediaProtocol();
 
   ipcMain.handle('app:get-version', () => app.getVersion());
   ipcMain.handle('media:open', () => openVideoDialog());
   ipcMain.handle('media:probe', (_event, mediaPath: string) => probeMedia(mediaPath));
+  ipcMain.handle(
+    'freeze:detect',
+    (
+      _event,
+      request: {
+        path: string;
+        durationSec: number;
+        options: DetectionOptions;
+      },
+    ) => {
+      validateDetectionOptions(request.options);
+
+      if (!Number.isFinite(request.durationSec) || request.durationSec <= 0) {
+        throw new Error('INVALID_MEDIA_DURATION');
+      }
+
+      return detectFreezes(
+        request.path,
+        request.durationSec,
+        request.options,
+      );
+    },
+  );
 
   createWindow();
 

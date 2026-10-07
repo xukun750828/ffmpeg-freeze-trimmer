@@ -1,26 +1,13 @@
 import { useMemo, useRef, useState } from 'react';
+import { FreezePanel } from './components/FreezePanel';
+import type { AnalysisStatus, DetectionOptions, FreezeInterval } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
+import { formatTime } from './utils/time';
 
-function formatTime(totalSeconds: number): string {
-  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
-    return '00:00';
-  }
-
-  const wholeSeconds = Math.floor(totalSeconds);
-  const hours = Math.floor(wholeSeconds / 3600);
-  const minutes = Math.floor((wholeSeconds % 3600) / 60);
-  const seconds = wholeSeconds % 60;
-
-  if (hours > 0) {
-    return [hours, minutes, seconds]
-      .map((part) => String(part).padStart(2, '0'))
-      .join(':');
-  }
-
-  return [minutes, seconds]
-    .map((part) => String(part).padStart(2, '0'))
-    .join(':');
-}
+const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
+  noise: 0.003,
+  minDurationSec: 2,
+};
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -30,10 +17,40 @@ export default function App() {
   const [status, setStatus] = useState<'idle' | 'opening' | 'ready' | 'failed'>('idle');
   const [error, setError] = useState<string | null>(null);
 
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>('idle');
+  const [intervals, setIntervals] = useState<FreezeInterval[]>([]);
+  const [detectionOptions, setDetectionOptions] = useState<DetectionOptions>(
+    DEFAULT_DETECTION_OPTIONS,
+  );
+
   const mediaSummary = useMemo(() => {
     if (!media) return null;
     return `${media.width}×${media.height} · ${media.fps.toFixed(2)} fps · ${media.videoCodec.toUpperCase()}`;
   }, [media]);
+
+  async function runDetection(
+    selected: OpenVideoResult,
+    probed: MediaInfo,
+    options = detectionOptions,
+  ) {
+    if (!window.desktopApi) return;
+
+    setAnalysisStatus('detecting');
+
+    try {
+      const detected = await window.desktopApi.detectFreezes(
+        selected.path,
+        probed.durationSec,
+        options,
+      );
+      setIntervals(detected);
+      setAnalysisStatus('ready');
+    } catch (caught) {
+      setIntervals([]);
+      setAnalysisStatus('failed');
+      setError(caught instanceof Error ? caught.message : '静止画面检测失败');
+    }
+  }
 
   async function handleOpenVideo() {
     if (!window.desktopApi) {
@@ -56,11 +73,20 @@ export default function App() {
       setSelection(selected);
       setMedia(probed);
       setCurrentTimeSec(0);
+      setIntervals([]);
       setStatus('ready');
+
+      await runDetection(selected, probed);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '打开视频失败');
       setStatus('failed');
     }
+  }
+
+  async function handleRedetect() {
+    if (!selection || !media) return;
+    setError(null);
+    await runDetection(selection, media, detectionOptions);
   }
 
   return (
@@ -109,38 +135,44 @@ export default function App() {
         </div>
 
         <aside className="side-panel">
-          <h2>媒体信息</h2>
-          {media ? (
-            <dl className="media-info">
-              <div>
-                <dt>时长</dt>
-                <dd>{formatTime(media.durationSec)}</dd>
-              </div>
-              <div>
-                <dt>分辨率</dt>
-                <dd>{media.width} × {media.height}</dd>
-              </div>
-              <div>
-                <dt>帧率</dt>
-                <dd>{media.fps.toFixed(2)} fps</dd>
-              </div>
-              <div>
-                <dt>视频编码</dt>
-                <dd>{media.videoCodec}</dd>
-              </div>
-              <div>
-                <dt>音频</dt>
-                <dd>{media.hasAudio ? media.audioCodec ?? 'unknown' : '无音轨'}</dd>
-              </div>
-            </dl>
-          ) : (
-            <p>打开视频后，这里会显示 ffprobe 读取到的媒体信息。</p>
-          )}
+          <section className="media-section">
+            <h2>媒体信息</h2>
+            {media ? (
+              <dl className="media-info">
+                <div>
+                  <dt>时长</dt>
+                  <dd>{formatTime(media.durationSec)}</dd>
+                </div>
+                <div>
+                  <dt>分辨率</dt>
+                  <dd>{media.width} × {media.height}</dd>
+                </div>
+                <div>
+                  <dt>帧率</dt>
+                  <dd>{media.fps.toFixed(2)} fps</dd>
+                </div>
+                <div>
+                  <dt>视频编码</dt>
+                  <dd>{media.videoCodec}</dd>
+                </div>
+                <div>
+                  <dt>音频</dt>
+                  <dd>{media.hasAudio ? media.audioCodec ?? 'unknown' : '无音轨'}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p>打开视频后，这里会显示 ffprobe 读取到的媒体信息。</p>
+            )}
+          </section>
 
-          <div className="next-step">
-            <h2>静止区间</h2>
-            <p>Iteration B 将在这里加入 FFmpeg 静止画面检测结果。</p>
-          </div>
+          <FreezePanel
+            status={analysisStatus}
+            intervals={intervals}
+            options={detectionOptions}
+            disabled={!media}
+            onOptionsChange={setDetectionOptions}
+            onRedetect={handleRedetect}
+          />
         </aside>
       </section>
     </main>
