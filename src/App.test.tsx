@@ -1,9 +1,18 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+
+let playSpy: ReturnType<typeof vi.spyOn>;
+let pauseSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+});
 
 afterEach(() => {
   delete window.desktopApi;
+  vi.restoreAllMocks();
 });
 
 function createDesktopApi() {
@@ -43,18 +52,20 @@ function createDesktopApi() {
   };
 }
 
-describe('App media import and freeze detection flow', () => {
+async function openVideoAndWait() {
+  fireEvent.click(screen.getByRole('button', { name: '打开视频' }));
+  await waitFor(() => {
+    expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+  });
+}
+
+describe('App media import and freeze review flow', () => {
   it('opens a local video, probes media, and automatically detects freeze intervals', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '打开视频' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('demo.mp4')).toBeInTheDocument();
-      expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
-    });
+    await openVideoAndWait();
 
     expect(desktopApi.probeMedia).toHaveBeenCalledWith('C:\\Videos\\demo.mp4');
     expect(desktopApi.detectFreezes).toHaveBeenCalledWith(
@@ -74,11 +85,7 @@ describe('App media import and freeze detection flow', () => {
     window.desktopApi = desktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '打开视频' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
-    });
+    await openVideoAndWait();
 
     fireEvent.change(screen.getByLabelText('最短静止时长'), {
       target: { value: '3.5' },
@@ -98,6 +105,28 @@ describe('App media import and freeze detection flow', () => {
         },
       );
     });
+  });
+
+  it('previews an interval with lead and tail context', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await openVideoAndWait();
+
+    fireEvent.click(screen.getByRole('button', { name: '预览静止区间 1' }));
+
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+    expect(video!.currentTime).toBeCloseTo(11.9, 3);
+    expect(playSpy).toHaveBeenCalledOnce();
+
+    const activeRow = screen.getByRole('button', { name: '预览静止区间 1' }).closest('article');
+    expect(activeRow).toHaveAttribute('data-active', 'true');
+
+    video!.currentTime = 18.7;
+    fireEvent.timeUpdate(video!);
+    expect(pauseSpy).toHaveBeenCalledOnce();
   });
 
   it('keeps the empty state when the file dialog is cancelled', async () => {

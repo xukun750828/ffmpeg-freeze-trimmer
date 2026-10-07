@@ -4,19 +4,23 @@ import { formatPreciseTime } from '../utils/time';
 interface FreezePanelProps {
   status: AnalysisStatus;
   intervals: FreezeInterval[];
+  activeIntervalId: string | null;
   options: DetectionOptions;
   disabled: boolean;
   onOptionsChange: (options: DetectionOptions) => void;
   onRedetect: () => void;
+  onPreview: (interval: FreezeInterval) => void;
 }
 
 export function FreezePanel({
   status,
   intervals,
+  activeIntervalId,
   options,
   disabled,
   onOptionsChange,
   onRedetect,
+  onPreview,
 }: FreezePanelProps) {
   const summary =
     status === 'detecting'
@@ -86,17 +90,32 @@ export function FreezePanel({
       </div>
 
       <div className="freeze-list" aria-live="polite">
-        {intervals.map((interval, index) => (
-          <article className="freeze-row" key={interval.id}>
-            <div className="freeze-index">{String(index + 1).padStart(2, '0')}</div>
-            <div className="freeze-times">
-              <strong>
-                {formatPreciseTime(interval.startSec)} → {formatPreciseTime(interval.endSec)}
-              </strong>
-              <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
-            </div>
-          </article>
-        ))}
+        {intervals.map((interval, index) => {
+          const active = interval.id === activeIntervalId;
+          return (
+            <article
+              className={`freeze-row${active ? ' active' : ''}`}
+              key={interval.id}
+              data-active={active ? 'true' : 'false'}
+            >
+              <div className="freeze-index">{String(index + 1).padStart(2, '0')}</div>
+              <button
+                className="freeze-preview-button"
+                type="button"
+                aria-label={`预览静止区间 ${index + 1}`}
+                onClick={() => onPreview(interval)}
+              >
+                <span className="freeze-times">
+                  <strong>
+                    {formatPreciseTime(interval.startSec)} → {formatPreciseTime(interval.endSec)}
+                  </strong>
+                  <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
+                </span>
+                <span className="preview-label">▶ 预览</span>
+              </button>
+            </article>
+          );
+        })}
       </div>
     </section>
   );

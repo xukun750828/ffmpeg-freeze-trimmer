@@ -9,6 +9,9 @@ const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
   minDurationSec: 2,
 };
 
+const PREVIEW_LEAD_SEC = 0.5;
+const PREVIEW_TAIL_SEC = 0.5;
+
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [selection, setSelection] = useState<OpenVideoResult | null>(null);
@@ -19,6 +22,8 @@ export default function App() {
 
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>('idle');
   const [intervals, setIntervals] = useState<FreezeInterval[]>([]);
+  const [activeIntervalId, setActiveIntervalId] = useState<string | null>(null);
+  const [previewEndSec, setPreviewEndSec] = useState<number | null>(null);
   const [detectionOptions, setDetectionOptions] = useState<DetectionOptions>(
     DEFAULT_DETECTION_OPTIONS,
   );
@@ -36,6 +41,8 @@ export default function App() {
     if (!window.desktopApi) return;
 
     setAnalysisStatus('detecting');
+    setActiveIntervalId(null);
+    setPreviewEndSec(null);
 
     try {
       const detected = await window.desktopApi.detectFreezes(
@@ -74,6 +81,8 @@ export default function App() {
       setMedia(probed);
       setCurrentTimeSec(0);
       setIntervals([]);
+      setActiveIntervalId(null);
+      setPreviewEndSec(null);
       setStatus('ready');
 
       await runDetection(selected, probed);
@@ -87,6 +96,33 @@ export default function App() {
     if (!selection || !media) return;
     setError(null);
     await runDetection(selection, media, detectionOptions);
+  }
+
+  function handlePreview(interval: FreezeInterval) {
+    const video = videoRef.current;
+    if (!video || !media) return;
+
+    const previewStart = Math.max(0, interval.startSec - PREVIEW_LEAD_SEC);
+    const previewEnd = Math.min(media.durationSec, interval.endSec + PREVIEW_TAIL_SEC);
+
+    setActiveIntervalId(interval.id);
+    setPreviewEndSec(previewEnd);
+    setCurrentTimeSec(previewStart);
+    video.currentTime = previewStart;
+
+    void video.play().catch(() => {
+      setError('无法开始播放当前预览区间。');
+    });
+  }
+
+  function handleVideoTimeUpdate(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const currentTime = event.currentTarget.currentTime;
+    setCurrentTimeSec(currentTime);
+
+    if (previewEndSec !== null && currentTime >= previewEndSec) {
+      event.currentTarget.pause();
+      setPreviewEndSec(null);
+    }
   }
 
   return (
@@ -118,7 +154,7 @@ export default function App() {
                 className="video-player"
                 src={selection.sourceUrl}
                 controls
-                onTimeUpdate={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
+                onTimeUpdate={handleVideoTimeUpdate}
                 onLoadedMetadata={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
               />
               <div className="player-status">
@@ -139,26 +175,11 @@ export default function App() {
             <h2>媒体信息</h2>
             {media ? (
               <dl className="media-info">
-                <div>
-                  <dt>时长</dt>
-                  <dd>{formatTime(media.durationSec)}</dd>
-                </div>
-                <div>
-                  <dt>分辨率</dt>
-                  <dd>{media.width} × {media.height}</dd>
-                </div>
-                <div>
-                  <dt>帧率</dt>
-                  <dd>{media.fps.toFixed(2)} fps</dd>
-                </div>
-                <div>
-                  <dt>视频编码</dt>
-                  <dd>{media.videoCodec}</dd>
-                </div>
-                <div>
-                  <dt>音频</dt>
-                  <dd>{media.hasAudio ? media.audioCodec ?? 'unknown' : '无音轨'}</dd>
-                </div>
+                <div><dt>时长</dt><dd>{formatTime(media.durationSec)}</dd></div>
+                <div><dt>分辨率</dt><dd>{media.width} × {media.height}</dd></div>
+                <div><dt>帧率</dt><dd>{media.fps.toFixed(2)} fps</dd></div>
+                <div><dt>视频编码</dt><dd>{media.videoCodec}</dd></div>
+                <div><dt>音频</dt><dd>{media.hasAudio ? media.audioCodec ?? 'unknown' : '无音轨'}</dd></div>
               </dl>
             ) : (
               <p>打开视频后，这里会显示 ffprobe 读取到的媒体信息。</p>
@@ -168,10 +189,12 @@ export default function App() {
           <FreezePanel
             status={analysisStatus}
             intervals={intervals}
+            activeIntervalId={activeIntervalId}
             options={detectionOptions}
             disabled={!media}
             onOptionsChange={setDetectionOptions}
             onRedetect={handleRedetect}
+            onPreview={handlePreview}
           />
         </aside>
       </section>
