@@ -1,0 +1,79 @@
+:root {
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #f5f7fb;
+  background: #111318;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 100vh;
+  background: #111318;
+}
+
+button {
+  border: 1px solid #3a3f49;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.app-header h1 {
+  margin: 4px 0 0;
+  font-size: 28px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #9ca3af;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid #2a2f38;
+  border-radius: 12px;
+  background: #181b21;
+}
+
+.player-placeholder {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 620px;
+  color: #d1d5db;
+  background: #0c0e12;
+}
+
+.side-panel {
+  padding: 20px;
+  border-left: 1px solid #2a2f38;
+}
+
+.side-panel h2 {
+  margin-top: 0;
+}
