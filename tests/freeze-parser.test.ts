@@ -2,7 +2,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { FreezeParser } from '../electron/main/freeze/freeze-parser';
-import { buildFreezeDetectArgs } from '../electron/main/freeze/freeze-detector';
+import {
+  buildFastFreezeDetectArgs,
+  buildFreezeDetectArgs,
+  buildRefineFreezeDetectArgs,
+  getFastScanProfile,
+} from '../electron/main/freeze/freeze-detector';
 
 describe('FreezeParser', () => {
   it('parses multiple complete freeze intervals', () => {
@@ -53,15 +58,61 @@ describe('FreezeParser', () => {
   });
 });
 
-describe('buildFreezeDetectArgs', () => {
-  it('builds deterministic ffmpeg freezedetect arguments', () => {
-    const args = buildFreezeDetectArgs('C:\\Videos\\demo.mp4', {
-      noise: 0.003,
-      minDurationSec: 2,
-    });
+describe('freeze detection argument builders', () => {
+  const options = {
+    noise: 0.003,
+    minDurationSec: 2,
+  };
+
+  it('builds deterministic precise ffmpeg freezedetect arguments', () => {
+    const args = buildFreezeDetectArgs('C:\\Videos\\demo.mp4', options);
 
     expect(args).toContain('freezedetect=n=0.003:d=2');
     expect(args).toContain('C:\\Videos\\demo.mp4');
     expect(args).toContain('0:v:0');
+  });
+
+  it('uses 2 fps and 360p for the default fast profile', () => {
+    expect(getFastScanProfile(options)).toEqual({
+      fps: 2,
+      height: 360,
+    });
+
+    const args = buildFastFreezeDetectArgs('C:\\Videos\\demo.mp4', options);
+    const filter = args[args.indexOf('-vf') + 1];
+
+    expect(filter).toContain('fps=2');
+    expect(filter).toContain('scale=-2:360:flags=fast_bilinear');
+    expect(filter).toContain('freezedetect=n=0.003:d=2');
+  });
+
+  it('raises fast-scan fps for short freeze thresholds', () => {
+    expect(
+      getFastScanProfile({
+        noise: 0.003,
+        minDurationSec: 0.5,
+      }).fps,
+    ).toBe(8);
+  });
+
+  it('builds a bounded precise refinement window', () => {
+    const args = buildRefineFreezeDetectArgs(
+      'C:\\Videos\\demo.mp4',
+      120.25,
+      6.5,
+      options,
+    );
+
+    expect(args.slice(0, 8)).toEqual([
+      '-hide_banner',
+      '-nostats',
+      '-ss',
+      '120.250000',
+      '-t',
+      '6.500000',
+      '-i',
+      'C:\\Videos\\demo.mp4',
+    ]);
+    expect(args).toContain('freezedetect=n=0.003:d=2');
   });
 });

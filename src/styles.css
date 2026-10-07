@@ -162,6 +162,12 @@ select { width: 100%; padding: 7px 8px; }
   background: #14181e;
 }
 .detection-controls label { display: grid; gap: 6px; color: #aeb6c4; font-size: 13px; }
+.detection-note {
+  margin: 0;
+  color: #8fb0ff !important;
+  font-size: 12px;
+  line-height: 1.5 !important;
+}
 .inline-input { display: flex; align-items: center; gap: 8px; }
 
 .freeze-list { display: grid; gap: 8px; }

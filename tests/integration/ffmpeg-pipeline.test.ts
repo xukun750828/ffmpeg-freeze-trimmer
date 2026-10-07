@@ -24,6 +24,43 @@ async function ensureFfmpegAvailable(): Promise<void> {
   }
 }
 
+async function createLongSyntheticInput(outputPath: string): Promise<void> {
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=15',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=blue:size=320x240:rate=30:duration=5',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=20',
+    '-filter_complex',
+    '[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]',
+    '-map',
+    '[v]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-pix_fmt',
+    'yuv420p',
+    outputPath,
+  ];
+
+  const result = await runProcess(process.env.FFMPEG_PATH || 'ffmpeg', args);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || 'LONG_SYNTHETIC_VIDEO_GENERATION_FAILED');
+  }
+}
+
 async function createSyntheticInput(outputPath: string, withAudio: boolean): Promise<void> {
   const args = [
     '-y',
@@ -90,6 +127,33 @@ afterEach(async () => {
 });
 
 describe('real FFmpeg pipeline', () => {
+  it(
+    'uses the fast scan path on long media and refines freeze boundaries',
+    async () => {
+      const inputPath = path.join(tempDir, 'long-fast-scan.mp4');
+      await createLongSyntheticInput(inputPath);
+
+      const source = await probeMedia(inputPath);
+      expect(source.durationSec).toBeGreaterThan(39);
+      expect(source.durationSec).toBeLessThan(41);
+
+      const freezes = await detectFreezes(
+        inputPath,
+        source.durationSec,
+        { noise: 0.003, minDurationSec: 2 },
+      );
+
+      expect(freezes.length).toBeGreaterThanOrEqual(1);
+      const longest = [...freezes].sort((a, b) => b.durationSec - a.durationSec)[0];
+
+      expect(longest.startSec).toBeGreaterThanOrEqual(14.8);
+      expect(longest.startSec).toBeLessThan(15.3);
+      expect(longest.endSec).toBeGreaterThan(19.7);
+      expect(longest.endSec).toBeLessThan(20.3);
+    },
+    30_000,
+  );
+
   it(
     'detects a synthetic static section and exports a shorter A/V MP4',
     async () => {

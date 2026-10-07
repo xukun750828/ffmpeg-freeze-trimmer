@@ -54,6 +54,9 @@ export function FreezePanel({
       </div>
 
       <div className="detection-controls">
+        <p className="detection-note">
+          30 秒以上视频会自动使用“快速粗扫 + 原分辨率边界精修”，长视频无需完整逐帧扫描。
+        </p>
         <label>
           <span>最短静止时长</span>
           <div className="inline-input">
