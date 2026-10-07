@@ -3,6 +3,7 @@ import { FreezePanel } from './components/FreezePanel';
 import { Timeline } from './components/Timeline';
 import type { AnalysisStatus, DetectionOptions, FreezeInterval } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
+import { getUserFriendlyError } from './utils/error-message';
 import { formatPreciseTime, formatTime } from './utils/time';
 
 const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
@@ -106,7 +107,7 @@ export default function App() {
     } catch (caught) {
       setIntervals([]);
       setAnalysisStatus('failed');
-      setError(caught instanceof Error ? caught.message : '静止画面检测失败');
+      setError(getUserFriendlyError(caught, '静止画面检测失败'));
     }
   }
 
@@ -137,7 +138,7 @@ export default function App() {
 
       await runDetection(selected, probed);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '打开视频失败');
+      setError(getUserFriendlyError(caught, '打开视频失败'));
       setStatus('failed');
     }
   }
@@ -235,7 +236,7 @@ export default function App() {
       setActiveExportJobId(jobId);
     } catch (caught) {
       setExportStatus('failed');
-      setError(caught instanceof Error ? caught.message : '导出失败');
+      setError(getUserFriendlyError(caught, '导出失败'));
     }
   }
 
