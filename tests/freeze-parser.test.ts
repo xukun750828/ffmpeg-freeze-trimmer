@@ -8,6 +8,7 @@ import {
   buildRefineFreezeDetectArgs,
   buildRefinementWindows,
   getFastScanProfile,
+  mapWithConcurrency,
 } from '../electron/main/freeze/freeze-detector';
 
 describe('FreezeParser', () => {
@@ -160,5 +161,26 @@ describe('freeze detection argument builders', () => {
     expect(windows).toHaveLength(2);
     expect(windows[0].endSec - windows[0].startSec).toBeLessThan(6);
     expect(windows[1].endSec - windows[1].startSec).toBeLessThan(6);
+  });
+
+  it('limits concurrent refinement workers and preserves result order', async () => {
+    let active = 0;
+    let peakActive = 0;
+
+    const results = await mapWithConcurrency(
+      [0, 1, 2, 3, 4, 5, 6, 7],
+      4,
+      async (value) => {
+        active += 1;
+        peakActive = Math.max(peakActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5 + (7 - value)));
+        active -= 1;
+        return value * 10;
+      },
+    );
+
+    expect(peakActive).toBeLessThanOrEqual(4);
+    expect(peakActive).toBeGreaterThan(1);
+    expect(results).toEqual([0, 10, 20, 30, 40, 50, 60, 70]);
   });
 });

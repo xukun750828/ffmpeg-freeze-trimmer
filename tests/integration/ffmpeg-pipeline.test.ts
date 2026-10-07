@@ -61,6 +61,51 @@ async function createLongSyntheticInput(outputPath: string): Promise<void> {
   }
 }
 
+async function createNearbyFreezeInput(outputPath: string): Promise<void> {
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=12',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=red:size=320x240:rate=30:duration=3',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=green:size=320x240:rate=30:duration=3',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=20',
+    '-filter_complex',
+    '[0:v][1:v][2:v][3:v][4:v]concat=n=5:v=1:a=0[v]',
+    '-map',
+    '[v]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-pix_fmt',
+    'yuv420p',
+    outputPath,
+  ];
+
+  const result = await runProcess(process.env.FFMPEG_PATH || 'ffmpeg', args);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || 'NEARBY_FREEZE_VIDEO_GENERATION_FAILED');
+  }
+}
+
 async function createSyntheticInput(outputPath: string, withAudio: boolean): Promise<void> {
   const args = [
     '-y',
@@ -150,6 +195,36 @@ describe('real FFmpeg pipeline', () => {
       expect(longest.startSec).toBeLessThan(15.3);
       expect(longest.endSec).toBeGreaterThan(19.7);
       expect(longest.endSec).toBeLessThan(20.3);
+    },
+    30_000,
+  );
+
+  it(
+    'keeps nearby freeze intervals distinct after merged-window refinement',
+    async () => {
+      const inputPath = path.join(tempDir, 'nearby-freezes.mp4');
+      await createNearbyFreezeInput(inputPath);
+
+      const source = await probeMedia(inputPath);
+      const freezes = await detectFreezes(
+        inputPath,
+        source.durationSec,
+        { noise: 0.003, minDurationSec: 2 },
+      );
+
+      const nearFirst = freezes.find(
+        (interval) => interval.startSec >= 11.5 && interval.startSec <= 12.5,
+      );
+      const nearSecond = freezes.find(
+        (interval) => interval.startSec >= 16.5 && interval.startSec <= 17.5,
+      );
+
+      expect(nearFirst).toBeDefined();
+      expect(nearSecond).toBeDefined();
+      expect(nearFirst!.endSec).toBeGreaterThan(14.5);
+      expect(nearFirst!.endSec).toBeLessThan(15.5);
+      expect(nearSecond!.endSec).toBeGreaterThan(19.5);
+      expect(nearSecond!.endSec).toBeLessThan(20.5);
     },
     30_000,
   );

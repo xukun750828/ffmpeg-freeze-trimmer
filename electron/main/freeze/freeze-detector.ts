@@ -9,6 +9,7 @@ const REFINE_MARGIN_SEC = 1.25;
 const REFINE_WINDOW_MERGE_GAP_SEC = 0.5;
 const MAX_REFINEMENT_WINDOW_SEC = 12;
 const REFINE_MATCH_TOLERANCE_SEC = 2.5;
+const REFINEMENT_CONCURRENCY = 4;
 
 export interface FastScanProfile {
   fps: number;
@@ -33,6 +34,49 @@ interface CandidateRefinement {
   startSec?: number;
   endSec?: number;
   confirmed: boolean;
+}
+
+interface RefinedBoundaryAssignment {
+  candidateIndex: number;
+  kind: BoundaryKind;
+  value: number;
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('INVALID_CONCURRENCY');
+  }
+
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+
+      if (index >= items.length) {
+        return;
+      }
+
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => runWorker()),
+  );
+
+  return results;
 }
 
 export function getFastScanProfile(options: DetectionOptions): FastScanProfile {
@@ -269,6 +313,56 @@ export function buildRefinementWindows(
   return merged;
 }
 
+async function refineWindow(
+  inputPath: string,
+  window: RefinementWindow,
+  options: DetectionOptions,
+  signal?: AbortSignal,
+): Promise<RefinedBoundaryAssignment[]> {
+  if (signal?.aborted) {
+    throw new Error('PROCESS_ABORTED');
+  }
+
+  const durationSec = window.endSec - window.startSec;
+  if (durationSec <= 0) {
+    return [];
+  }
+
+  const local = await runDetectionPass(
+    buildRefineFreezeDetectArgs(
+      inputPath,
+      window.startSec,
+      durationSec,
+      options,
+    ),
+    durationSec,
+    signal,
+  );
+  const global = globalizeIntervals(local, window.startSec);
+
+  const assignments: RefinedBoundaryAssignment[] = [];
+
+  for (const boundary of window.boundaries) {
+    const value = closestBoundary(
+      global,
+      boundary.kind,
+      boundary.targetSec,
+    );
+
+    if (value === undefined) {
+      continue;
+    }
+
+    assignments.push({
+      candidateIndex: boundary.candidateIndex,
+      kind: boundary.kind,
+      value,
+    });
+  }
+
+  return assignments;
+}
+
 async function refineCandidatesByMergedWindows(
   inputPath: string,
   mediaDurationSec: number,
@@ -285,46 +379,21 @@ async function refineCandidatesByMergedWindows(
     options,
   );
 
-  for (const window of windows) {
-    if (signal?.aborted) {
-      throw new Error('PROCESS_ABORTED');
-    }
+  const windowResults = await mapWithConcurrency(
+    windows,
+    REFINEMENT_CONCURRENCY,
+    (window) => refineWindow(inputPath, window, options, signal),
+  );
 
-    const durationSec = window.endSec - window.startSec;
-    if (durationSec <= 0) {
-      continue;
-    }
-
-    const local = await runDetectionPass(
-      buildRefineFreezeDetectArgs(
-        inputPath,
-        window.startSec,
-        durationSec,
-        options,
-      ),
-      durationSec,
-      signal,
-    );
-    const global = globalizeIntervals(local, window.startSec);
-
-    for (const boundary of window.boundaries) {
-      const refinedBoundary = closestBoundary(
-        global,
-        boundary.kind,
-        boundary.targetSec,
-      );
-
-      if (refinedBoundary === undefined) {
-        continue;
-      }
-
-      const refinement = refinements[boundary.candidateIndex];
+  for (const assignments of windowResults) {
+    for (const assignment of assignments) {
+      const refinement = refinements[assignment.candidateIndex];
       refinement.confirmed = true;
 
-      if (boundary.kind === 'start') {
-        refinement.startSec = refinedBoundary;
+      if (assignment.kind === 'start') {
+        refinement.startSec = assignment.value;
       } else {
-        refinement.endSec = refinedBoundary;
+        refinement.endSec = assignment.value;
       }
     }
   }
