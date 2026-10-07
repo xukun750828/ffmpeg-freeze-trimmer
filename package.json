@@ -10,7 +10,7 @@
     "electron:dev": "tsc -p electron/tsconfig.json && electron .",
     "build": "npm run typecheck && vite build && tsc -p electron/tsconfig.json",
     "generate:icon": "node scripts/generate-icon.cjs",
-    "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run"
   },
