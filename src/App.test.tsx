@@ -54,11 +54,12 @@ function createDesktopApi() {
     cancelExport: vi.fn().mockResolvedValue(undefined),
     onExportProgress: vi.fn().mockImplementation(() => () => undefined),
     onExportFinished: vi.fn().mockImplementation(() => () => undefined),
+    onMenuOpenVideo: vi.fn().mockImplementation(() => () => undefined),
   };
 }
 
 async function openVideoAndWait() {
-  fireEvent.click(screen.getByRole('button', { name: '打开视频' }));
+  fireEvent.click(screen.getByRole('button', { name: '导入本地 MP4' }));
   await waitFor(() => {
     expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
   });
@@ -134,19 +135,41 @@ describe('App media import and freeze review flow', () => {
     expect(pauseSpy).toHaveBeenCalledOnce();
   });
 
+  it('imports a local MP4 from the native File menu event', async () => {
+    const desktopApi = createDesktopApi();
+    let menuOpenListener: (() => void) | null = null;
+    desktopApi.onMenuOpenVideo.mockImplementation((listener: () => void) => {
+      menuOpenListener = listener;
+      return () => undefined;
+    });
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+
+    expect(desktopApi.onMenuOpenVideo).toHaveBeenCalledOnce();
+    expect(menuOpenListener).not.toBeNull();
+
+    menuOpenListener!();
+
+    await waitFor(() => {
+      expect(desktopApi.openVideo).toHaveBeenCalledOnce();
+      expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+    });
+  });
+
   it('keeps the empty state when the file dialog is cancelled', async () => {
     const desktopApi = createDesktopApi();
     desktopApi.openVideo.mockResolvedValueOnce(null);
     window.desktopApi = desktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '打开视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '导入本地 MP4' }));
 
     await waitFor(() => {
       expect(desktopApi.openVideo).toHaveBeenCalledOnce();
     });
 
-    expect(screen.getByText('打开一个本地 MP4')).toBeInTheDocument();
+    expect(screen.getByText('导入一个本地 MP4')).toBeInTheDocument();
     expect(desktopApi.probeMedia).not.toHaveBeenCalled();
     expect(desktopApi.detectFreezes).not.toHaveBeenCalled();
   });

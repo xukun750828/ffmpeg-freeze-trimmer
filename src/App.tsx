@@ -66,6 +66,15 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const api = window.desktopApi;
+    if (!api) return;
+
+    return api.onMenuOpenVideo(() => {
+      void handleOpenVideo();
+    });
+  }, [exportStatus, media, detectionOptions]);
+
   const mediaSummary = useMemo(() => {
     if (!media) return null;
     return `${media.width}×${media.height} · ${media.fps.toFixed(2)} fps · ${media.videoCodec.toUpperCase()}`;
@@ -267,7 +276,7 @@ export default function App() {
             onClick={handleOpenVideo}
             disabled={status === 'opening' || exportStatus === 'exporting'}
           >
-            {status === 'opening' ? '正在打开…' : '打开视频'}
+            {status === 'opening' ? '正在导入…' : '导入本地 MP4'}
           </button>
           <button type="button" onClick={handleExport} disabled={exportDisabled}>
             {exportStatus === 'exporting'
@@ -333,8 +342,8 @@ export default function App() {
             </>
           ) : (
             <div className="player-placeholder">
-              <strong>打开一个本地 MP4</strong>
-              <span>播放器将在这里显示视频。</span>
+              <strong>导入一个本地 MP4</strong>
+              <span>也可以使用“文件 → 导入本地 MP4…”或 Ctrl+O。</span>
             </div>
           )}
         </div>

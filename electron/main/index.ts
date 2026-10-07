@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import path from 'node:path';
+import { installApplicationMenu } from './app-menu';
 import { VideoExporter } from './export/video-exporter';
 import type { ExportRequest } from './export/types';
 import { detectFreezes } from './freeze/freeze-detector';
@@ -23,7 +24,7 @@ protocol.registerSchemesAsPrivileged([
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const videoExporter = new VideoExporter();
 
-function createWindow() {
+function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -42,6 +43,9 @@ function createWindow() {
   } else {
     void window.loadFile(path.join(__dirname, '../../dist/index.html'));
   }
+
+  installApplicationMenu(window);
+  return window;
 }
 
 function validateDetectionOptions(options: DetectionOptions): void {
