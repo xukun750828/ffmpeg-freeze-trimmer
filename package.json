@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-freeze-trimmer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Desktop MP4 freeze-frame review and trimming tool powered by FFmpeg",
   "author": "xukun750828",
@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npm run electron:dev\"",
     "electron:dev": "tsc -p electron/tsconfig.json && electron .",
-    "build": "npm run typecheck && vite build && tsc -p electron/tsconfig.json",
+    "build": "npm run typecheck && vite build && node scripts/verify-dist-entry.cjs && tsc -p electron/tsconfig.json",
     "generate:icon": "node scripts/generate-icon.cjs",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
@@ -62,7 +62,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
