@@ -18,6 +18,7 @@ type ExportUiStatus = 'idle' | 'exporting' | 'completed' | 'cancelled' | 'failed
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const previewSeekInProgressRef = useRef(false);
   const [selection, setSelection] = useState<OpenVideoResult | null>(null);
   const [media, setMedia] = useState<MediaInfo | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -180,14 +181,55 @@ export default function App() {
     const previewStart = Math.max(0, interval.startSec - PREVIEW_LEAD_SEC);
     const previewEnd = Math.min(media.durationSec, interval.endSec + PREVIEW_TAIL_SEC);
 
+    setError(null);
     setActiveIntervalId(interval.id);
     setPreviewEndSec(previewEnd);
     setCurrentTimeSec(previewStart);
+
+    previewSeekInProgressRef.current = true;
     video.currentTime = previewStart;
 
-    void video.play().catch(() => {
-      setError('无法开始播放当前预览区间。');
-    });
+    const tryPlay = () => {
+      void video.play().catch((caught) => {
+        if (
+          caught instanceof DOMException &&
+          caught.name === 'AbortError' &&
+          video.seeking
+        ) {
+          video.addEventListener(
+            'seeked',
+            () => {
+              void video.play().catch(() => {
+                setError('无法开始播放当前预览区间。');
+              });
+            },
+            { once: true },
+          );
+          return;
+        }
+
+        setError('无法开始播放当前预览区间。');
+      });
+    };
+
+    tryPlay();
+  }
+
+  function handleVideoSeeking() {
+    if (previewSeekInProgressRef.current) {
+      return;
+    }
+
+    setPreviewEndSec(null);
+    setActiveIntervalId(null);
+    setError((current) =>
+      current === '无法开始播放当前预览区间。' ? null : current,
+    );
+  }
+
+  function handleVideoSeeked(event: React.SyntheticEvent<HTMLVideoElement>) {
+    previewSeekInProgressRef.current = false;
+    setCurrentTimeSec(event.currentTarget.currentTime);
   }
 
   function handleVideoTimeUpdate(event: React.SyntheticEvent<HTMLVideoElement>) {
@@ -334,7 +376,14 @@ export default function App() {
                 src={selection.sourceUrl}
                 controls
                 onTimeUpdate={handleVideoTimeUpdate}
+                onSeeking={handleVideoSeeking}
+                onSeeked={handleVideoSeeked}
                 onLoadedMetadata={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
+                onPlay={() =>
+                  setError((current) =>
+                    current === '无法开始播放当前预览区间。' ? null : current,
+                  )
+                }
               />
               <div className="player-status">
                 <span>{formatTime(currentTimeSec)} / {formatTime(media.durationSec)}</span>

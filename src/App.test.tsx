@@ -135,6 +135,33 @@ describe('App media import and freeze review flow', () => {
     expect(pauseSpy).toHaveBeenCalledOnce();
   });
 
+  it('exits interval preview mode when the user manually seeks the video', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await openVideoAndWait();
+
+    fireEvent.click(screen.getByRole('button', { name: '预览静止区间 1' }));
+
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+
+    // Finish the programmatic preview seek first, then simulate a user drag.
+    fireEvent.seeked(video!);
+    fireEvent.seeking(video!);
+
+    const activeRow = screen
+      .getByRole('button', { name: '预览静止区间 1' })
+      .closest('article');
+    expect(activeRow).toHaveAttribute('data-active', 'false');
+
+    pauseSpy.mockClear();
+    video!.currentTime = 18.7;
+    fireEvent.timeUpdate(video!);
+    expect(pauseSpy).not.toHaveBeenCalled();
+  });
+
   it('processes the MP4 selected by the native File menu without reopening the dialog', async () => {
     const desktopApi = createDesktopApi();
     let menuSelectionListener:
