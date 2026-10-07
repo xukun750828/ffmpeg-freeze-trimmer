@@ -146,3 +146,39 @@ describe('App media import and freeze review flow', () => {
     expect(desktopApi.detectFreezes).not.toHaveBeenCalled();
   });
 });
+
+describe('selection and timeline workflow', () => {
+  it('selects removal intervals and updates output duration statistics', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await openVideoAndWait();
+
+    fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
+
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:05.800')).toBeInTheDocument();
+    expect(screen.getByText('输出约 01:59.700')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('全选静止区间'));
+
+    expect(screen.getByText('已选择 2 / 2')).toBeInTheDocument();
+    expect(screen.getByText('已选 2 段')).toBeInTheDocument();
+  });
+
+  it('previews intervals from the timeline', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await openVideoAndWait();
+
+    fireEvent.click(screen.getByRole('button', { name: '时间轴静止区间 2' }));
+
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+    expect(video!.currentTime).toBeCloseTo(30.6, 3);
+    expect(playSpy).toHaveBeenCalledOnce();
+  });
+});

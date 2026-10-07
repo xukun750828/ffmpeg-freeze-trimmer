@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
+import { Timeline } from './components/Timeline';
 import type { AnalysisStatus, DetectionOptions, FreezeInterval } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
-import { formatTime } from './utils/time';
+import { formatPreciseTime, formatTime } from './utils/time';
 
 const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
   noise: 0.003,
@@ -33,6 +34,20 @@ export default function App() {
     return `${media.width}×${media.height} · ${media.fps.toFixed(2)} fps · ${media.videoCodec.toUpperCase()}`;
   }, [media]);
 
+  const selectedIntervals = useMemo(
+    () => intervals.filter((interval) => interval.selectedForRemoval),
+    [intervals],
+  );
+
+  const selectedDurationSec = useMemo(
+    () => selectedIntervals.reduce((sum, interval) => sum + interval.durationSec, 0),
+    [selectedIntervals],
+  );
+
+  const estimatedOutputSec = media
+    ? Math.max(0, media.durationSec - selectedDurationSec)
+    : 0;
+
   async function runDetection(
     selected: OpenVideoResult,
     probed: MediaInfo,
@@ -50,7 +65,7 @@ export default function App() {
         probed.durationSec,
         options,
       );
-      setIntervals(detected);
+      setIntervals(detected.map((interval) => ({ ...interval, selectedForRemoval: false })));
       setAnalysisStatus('ready');
     } catch (caught) {
       setIntervals([]);
@@ -125,6 +140,25 @@ export default function App() {
     }
   }
 
+  function handleToggleRemoval(intervalId: string) {
+    setIntervals((current) =>
+      current.map((interval) =>
+        interval.id === intervalId
+          ? { ...interval, selectedForRemoval: !interval.selectedForRemoval }
+          : interval,
+      ),
+    );
+  }
+
+  function handleSelectAll(selected: boolean) {
+    setIntervals((current) =>
+      current.map((interval) => ({
+        ...interval,
+        selectedForRemoval: selected,
+      })),
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -161,6 +195,20 @@ export default function App() {
                 <span>{formatTime(currentTimeSec)} / {formatTime(media.durationSec)}</span>
                 <span>{mediaSummary}</span>
               </div>
+
+              <Timeline
+                durationSec={media.durationSec}
+                currentTimeSec={currentTimeSec}
+                intervals={intervals}
+                activeIntervalId={activeIntervalId}
+                onPreview={handlePreview}
+              />
+
+              <div className="selection-summary" aria-label="删除统计">
+                <span>已选 {selectedIntervals.length} 段</span>
+                <span>删除 {formatPreciseTime(selectedDurationSec)}</span>
+                <span>输出约 {formatPreciseTime(estimatedOutputSec)}</span>
+              </div>
             </>
           ) : (
             <div className="player-placeholder">
@@ -195,6 +243,8 @@ export default function App() {
             onOptionsChange={setDetectionOptions}
             onRedetect={handleRedetect}
             onPreview={handlePreview}
+            onToggleRemoval={handleToggleRemoval}
+            onSelectAll={handleSelectAll}
           />
         </aside>
       </section>

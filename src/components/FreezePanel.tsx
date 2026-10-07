@@ -10,6 +10,8 @@ interface FreezePanelProps {
   onOptionsChange: (options: DetectionOptions) => void;
   onRedetect: () => void;
   onPreview: (interval: FreezeInterval) => void;
+  onToggleRemoval: (intervalId: string) => void;
+  onSelectAll: (selected: boolean) => void;
 }
 
 export function FreezePanel({
@@ -21,7 +23,11 @@ export function FreezePanel({
   onOptionsChange,
   onRedetect,
   onPreview,
+  onToggleRemoval,
+  onSelectAll,
 }: FreezePanelProps) {
+  const selectedCount = intervals.filter((interval) => interval.selectedForRemoval).length;
+  const allSelected = intervals.length > 0 && selectedCount === intervals.length;
   const summary =
     status === 'detecting'
       ? '正在检测静止画面…'
@@ -89,16 +95,38 @@ export function FreezePanel({
         </label>
       </div>
 
+      {intervals.length > 0 && (
+        <div className="selection-toolbar">
+          <label>
+            <input
+              aria-label="全选静止区间"
+              type="checkbox"
+              checked={allSelected}
+              onChange={(event) => onSelectAll(event.target.checked)}
+            />
+            <span>全选</span>
+          </label>
+          <span>已选择 {selectedCount} / {intervals.length}</span>
+        </div>
+      )}
+
       <div className="freeze-list" aria-live="polite">
         {intervals.map((interval, index) => {
           const active = interval.id === activeIntervalId;
           return (
             <article
-              className={`freeze-row${active ? ' active' : ''}`}
+              className={`freeze-row${active ? ' active' : ''}${interval.selectedForRemoval ? ' selected' : ''}`}
               key={interval.id}
               data-active={active ? 'true' : 'false'}
             >
-              <div className="freeze-index">{String(index + 1).padStart(2, '0')}</div>
+              <label className="freeze-check">
+                <input
+                  aria-label={`选择删除静止区间 ${index + 1}`}
+                  type="checkbox"
+                  checked={interval.selectedForRemoval}
+                  onChange={() => onToggleRemoval(interval.id)}
+                />
+              </label>
               <button
                 className="freeze-preview-button"
                 type="button"
@@ -111,7 +139,7 @@ export function FreezePanel({
                   </strong>
                   <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
                 </span>
-                <span className="preview-label">▶ 预览</span>
+                <span className="preview-label">▶</span>
               </button>
             </article>
           );
