@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { runProcess } from '../process/process-runner';
 import type { MediaInfo } from './types';
 
 interface FfprobeStream {
@@ -86,7 +86,7 @@ export async function probeMedia(filePath: string): Promise<MediaInfo> {
   await validateInputPath(filePath);
 
   const executable = process.env.FFPROBE_PATH || 'ffprobe';
-  const args = [
+  const result = await runProcess(executable, [
     '-v',
     'error',
     '-print_format',
@@ -94,40 +94,11 @@ export async function probeMedia(filePath: string): Promise<MediaInfo> {
     '-show_format',
     '-show_streams',
     filePath,
-  ];
+  ]);
 
-  return new Promise<MediaInfo>((resolve, reject) => {
-    const child = spawn(executable, args, {
-      shell: false,
-      windowsHide: true,
-    });
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || 'FFPROBE_FAILED');
+  }
 
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', () => {
-      reject(new Error('FFPROBE_FAILED'));
-    });
-
-    child.on('close', (exitCode) => {
-      if (exitCode !== 0) {
-        reject(new Error(stderr.trim() || 'FFPROBE_FAILED'));
-        return;
-      }
-
-      try {
-        resolve(parseFfprobeOutput(filePath, stdout));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
+  return parseFfprobeOutput(filePath, result.stdout);
 }
