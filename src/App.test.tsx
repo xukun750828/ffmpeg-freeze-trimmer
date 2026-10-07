@@ -49,6 +49,11 @@ function createDesktopApi() {
         selectedForRemoval: false,
       },
     ]),
+    chooseOutputPath: vi.fn().mockResolvedValue('C:\\Videos\\demo_trimmed.mp4'),
+    startExport: vi.fn().mockResolvedValue({ jobId: 'job-1' }),
+    cancelExport: vi.fn().mockResolvedValue(undefined),
+    onExportProgress: vi.fn().mockImplementation(() => () => undefined),
+    onExportFinished: vi.fn().mockImplementation(() => () => undefined),
   };
 }
 
@@ -147,7 +152,7 @@ describe('App media import and freeze review flow', () => {
   });
 });
 
-describe('selection and timeline workflow', () => {
+describe('selection, timeline, and export workflow', () => {
   it('selects removal intervals and updates output duration statistics', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
@@ -180,5 +185,39 @@ describe('selection and timeline workflow', () => {
     expect(video).not.toBeNull();
     expect(video!.currentTime).toBeCloseTo(30.6, 3);
     expect(playSpy).toHaveBeenCalledOnce();
+  });
+
+  it('starts an MP4 export with the selected removal ranges and supports cancellation', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await openVideoAndWait();
+
+    fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
+    fireEvent.click(screen.getByRole('button', { name: '导出视频' }));
+
+    await waitFor(() => {
+      expect(desktopApi.startExport).toHaveBeenCalledWith({
+        inputPath: 'C:\\Videos\\demo.mp4',
+        outputPath: 'C:\\Videos\\demo_trimmed.mp4',
+        durationSec: 125.5,
+        hasAudio: true,
+        removeRanges: [
+          {
+            startSec: 12.4,
+            endSec: 18.2,
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByRole('button', { name: '导出中 0%' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '取消导出' }));
+
+    await waitFor(() => {
+      expect(desktopApi.cancelExport).toHaveBeenCalledWith('job-1');
+    });
   });
 });

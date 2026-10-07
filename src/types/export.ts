@@ -3,12 +3,6 @@ export interface TimeRange {
   endSec: number;
 }
 
-export interface ExportPlan {
-  removeRanges: TimeRange[];
-  keepRanges: TimeRange[];
-  outputDurationSec: number;
-}
-
 export interface ExportRequest {
   inputPath: string;
   outputPath: string;
@@ -16,13 +10,6 @@ export interface ExportRequest {
   hasAudio: boolean;
   removeRanges: TimeRange[];
 }
-
-export type ExportStatus =
-  | 'idle'
-  | 'exporting'
-  | 'completed'
-  | 'cancelled'
-  | 'failed';
 
 export interface ExportProgressEvent {
   jobId: string;
@@ -32,7 +19,7 @@ export interface ExportProgressEvent {
 
 export interface ExportFinishedEvent {
   jobId: string;
-  status: Exclude<ExportStatus, 'idle' | 'exporting'>;
+  status: 'completed' | 'cancelled' | 'failed';
   outputPath?: string;
   error?: string;
 }

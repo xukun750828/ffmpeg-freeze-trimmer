@@ -1,5 +1,7 @@
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import path from 'node:path';
+import { VideoExporter } from './export/video-exporter';
+import type { ExportRequest } from './export/types';
 import { detectFreezes } from './freeze/freeze-detector';
 import type { DetectionOptions } from './freeze/types';
 import { openVideoDialog } from './media/media-importer';
@@ -19,6 +21,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+const videoExporter = new VideoExporter();
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -83,6 +86,41 @@ app.whenReady().then(() => {
       );
     },
   );
+
+  ipcMain.handle('export:choose-output', async (_event, defaultName: string) => {
+    const result = await dialog.showSaveDialog({
+      title: '导出裁剪后的视频',
+      defaultPath: defaultName,
+      filters: [
+        {
+          name: 'MP4 Video',
+          extensions: ['mp4'],
+        },
+      ],
+    });
+
+    return result.canceled ? null : result.filePath ?? null;
+  });
+
+  ipcMain.handle('export:start', (event, request: ExportRequest) => {
+    return videoExporter.start(
+      request,
+      (progressEvent) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('export:progress', progressEvent);
+        }
+      },
+      (finishedEvent) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('export:finished', finishedEvent);
+        }
+      },
+    );
+  });
+
+  ipcMain.handle('export:cancel', (_event, jobId: string) => {
+    videoExporter.cancel(jobId);
+  });
 
   createWindow();
 

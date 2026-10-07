@@ -7,6 +7,7 @@ interface FreezePanelProps {
   activeIntervalId: string | null;
   options: DetectionOptions;
   disabled: boolean;
+  selectionDisabled: boolean;
   onOptionsChange: (options: DetectionOptions) => void;
   onRedetect: () => void;
   onPreview: (interval: FreezeInterval) => void;
@@ -20,6 +21,7 @@ export function FreezePanel({
   activeIntervalId,
   options,
   disabled,
+  selectionDisabled,
   onOptionsChange,
   onRedetect,
   onPreview,
@@ -102,6 +104,7 @@ export function FreezePanel({
               aria-label="全选静止区间"
               type="checkbox"
               checked={allSelected}
+              disabled={selectionDisabled}
               onChange={(event) => onSelectAll(event.target.checked)}
             />
             <span>全选</span>
@@ -124,6 +127,7 @@ export function FreezePanel({
                   aria-label={`选择删除静止区间 ${index + 1}`}
                   type="checkbox"
                   checked={interval.selectedForRemoval}
+                  disabled={selectionDisabled}
                   onChange={() => onToggleRemoval(interval.id)}
                 />
               </label>

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
 import { Timeline } from './components/Timeline';
 import type { AnalysisStatus, DetectionOptions, FreezeInterval } from './types/freeze';
@@ -12,6 +12,8 @@ const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
 
 const PREVIEW_LEAD_SEC = 0.5;
 const PREVIEW_TAIL_SEC = 0.5;
+
+type ExportUiStatus = 'idle' | 'exporting' | 'completed' | 'cancelled' | 'failed';
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -28,6 +30,40 @@ export default function App() {
   const [detectionOptions, setDetectionOptions] = useState<DetectionOptions>(
     DEFAULT_DETECTION_OPTIONS,
   );
+
+  const [exportStatus, setExportStatus] = useState<ExportUiStatus>('idle');
+  const [exportProgress, setExportProgress] = useState(0);
+  const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const api = window.desktopApi;
+    if (!api) return;
+
+    const stopProgress = api.onExportProgress((event) => {
+      setExportProgress(event.progress);
+    });
+
+    const stopFinished = api.onExportFinished((event) => {
+      setActiveExportJobId(null);
+      setExportStatus(event.status);
+
+      if (event.status === 'completed') {
+        setExportProgress(1);
+        setExportMessage(`导出完成：${event.outputPath ?? ''}`);
+      } else if (event.status === 'cancelled') {
+        setExportMessage('导出已取消。');
+      } else {
+        setExportMessage(null);
+        setError(event.error ?? '导出失败');
+      }
+    });
+
+    return () => {
+      stopProgress();
+      stopFinished();
+    };
+  }, []);
 
   const mediaSummary = useMemo(() => {
     if (!media) return null;
@@ -75,14 +111,11 @@ export default function App() {
   }
 
   async function handleOpenVideo() {
-    if (!window.desktopApi) {
-      setError('当前环境没有桌面 API。');
-      setStatus('failed');
-      return;
-    }
+    if (!window.desktopApi || exportStatus === 'exporting') return;
 
     setStatus('opening');
     setError(null);
+    setExportMessage(null);
 
     try {
       const selected = await window.desktopApi.openVideo();
@@ -98,6 +131,8 @@ export default function App() {
       setIntervals([]);
       setActiveIntervalId(null);
       setPreviewEndSec(null);
+      setExportStatus('idle');
+      setExportProgress(0);
       setStatus('ready');
 
       await runDetection(selected, probed);
@@ -108,7 +143,7 @@ export default function App() {
   }
 
   async function handleRedetect() {
-    if (!selection || !media) return;
+    if (!selection || !media || exportStatus === 'exporting') return;
     setError(null);
     await runDetection(selection, media, detectionOptions);
   }
@@ -141,6 +176,8 @@ export default function App() {
   }
 
   function handleToggleRemoval(intervalId: string) {
+    if (exportStatus === 'exporting') return;
+
     setIntervals((current) =>
       current.map((interval) =>
         interval.id === intervalId
@@ -151,6 +188,8 @@ export default function App() {
   }
 
   function handleSelectAll(selected: boolean) {
+    if (exportStatus === 'exporting') return;
+
     setIntervals((current) =>
       current.map((interval) => ({
         ...interval,
@@ -158,6 +197,59 @@ export default function App() {
       })),
     );
   }
+
+  async function handleExport() {
+    if (
+      !window.desktopApi ||
+      !selection ||
+      !media ||
+      selectedIntervals.length === 0 ||
+      estimatedOutputSec <= 0 ||
+      exportStatus === 'exporting'
+    ) {
+      return;
+    }
+
+    setError(null);
+    setExportMessage(null);
+
+    const defaultName = selection.name.replace(/\.mp4$/i, '') + '_trimmed.mp4';
+    const outputPath = await window.desktopApi.chooseOutputPath(defaultName);
+    if (!outputPath) return;
+
+    try {
+      setExportStatus('exporting');
+      setExportProgress(0);
+
+      const { jobId } = await window.desktopApi.startExport({
+        inputPath: selection.path,
+        outputPath,
+        durationSec: media.durationSec,
+        hasAudio: media.hasAudio,
+        removeRanges: selectedIntervals.map((interval) => ({
+          startSec: interval.startSec,
+          endSec: interval.endSec,
+        })),
+      });
+
+      setActiveExportJobId(jobId);
+    } catch (caught) {
+      setExportStatus('failed');
+      setError(caught instanceof Error ? caught.message : '导出失败');
+    }
+  }
+
+  async function handleCancelExport() {
+    if (!window.desktopApi || !activeExportJobId) return;
+    await window.desktopApi.cancelExport(activeExportJobId);
+  }
+
+  const exportDisabled =
+    !media ||
+    !selection ||
+    selectedIntervals.length === 0 ||
+    estimatedOutputSec <= 0 ||
+    exportStatus === 'exporting';
 
   return (
     <main className="app-shell">
@@ -168,14 +260,42 @@ export default function App() {
           {selection && <p className="file-name">{selection.name}</p>}
         </div>
 
-        <button type="button" onClick={handleOpenVideo} disabled={status === 'opening'}>
-          {status === 'opening' ? '正在打开…' : '打开视频'}
-        </button>
+        <div className="header-actions">
+          <button
+            type="button"
+            onClick={handleOpenVideo}
+            disabled={status === 'opening' || exportStatus === 'exporting'}
+          >
+            {status === 'opening' ? '正在打开…' : '打开视频'}
+          </button>
+          <button type="button" onClick={handleExport} disabled={exportDisabled}>
+            {exportStatus === 'exporting'
+              ? `导出中 ${Math.round(exportProgress * 100)}%`
+              : '导出视频'}
+          </button>
+          {exportStatus === 'exporting' && (
+            <button type="button" className="secondary-button" onClick={handleCancelExport}>
+              取消导出
+            </button>
+          )}
+        </div>
       </header>
 
       {error && (
         <div className="error-banner" role="alert">
           {error}
+        </div>
+      )}
+
+      {exportMessage && (
+        <div className="success-banner" role="status">
+          {exportMessage}
+        </div>
+      )}
+
+      {exportStatus === 'exporting' && (
+        <div className="export-progress" aria-label="导出进度">
+          <div style={{ width: `${Math.round(exportProgress * 100)}%` }} />
         </div>
       )}
 
@@ -239,7 +359,8 @@ export default function App() {
             intervals={intervals}
             activeIntervalId={activeIntervalId}
             options={detectionOptions}
-            disabled={!media}
+            disabled={!media || exportStatus === 'exporting'}
+            selectionDisabled={exportStatus === 'exporting'}
             onOptionsChange={setDetectionOptions}
             onRedetect={handleRedetect}
             onPreview={handlePreview}
