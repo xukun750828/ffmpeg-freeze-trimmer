@@ -194,31 +194,57 @@ function globalizeIntervals(
   }));
 }
 
-function closestBoundary(
+export function matchRefinementBoundaries(
   intervals: FreezeInterval[],
-  kind: BoundaryKind,
-  targetSec: number,
-): number | undefined {
-  const values = intervals.map((interval) =>
-    kind === 'start' ? interval.startSec : interval.endSec,
-  );
+  boundaries: RefinementBoundaryRef[],
+): RefinedBoundaryAssignment[] {
+  const assignments: RefinedBoundaryAssignment[] = [];
 
-  let closest: number | undefined;
-  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const kind of ['start', 'end'] as const) {
+    const refs = boundaries
+      .map((boundary, refIndex) => ({ boundary, refIndex }))
+      .filter(({ boundary }) => boundary.kind === kind);
+    const values = intervals.map((interval) =>
+      kind === 'start' ? interval.startSec : interval.endSec,
+    );
 
-  for (const value of values) {
-    const distance = Math.abs(value - targetSec);
-    if (distance < closestDistance) {
-      closest = value;
-      closestDistance = distance;
+    const pairs: Array<{
+      refIndex: number;
+      valueIndex: number;
+      distance: number;
+    }> = [];
+
+    for (const { boundary, refIndex } of refs) {
+      values.forEach((value, valueIndex) => {
+        const distance = Math.abs(value - boundary.targetSec);
+        if (distance <= REFINE_MATCH_TOLERANCE_SEC) {
+          pairs.push({ refIndex, valueIndex, distance });
+        }
+      });
+    }
+
+    pairs.sort((a, b) => a.distance - b.distance);
+
+    const usedRefs = new Set<number>();
+    const usedValues = new Set<number>();
+
+    for (const pair of pairs) {
+      if (usedRefs.has(pair.refIndex) || usedValues.has(pair.valueIndex)) {
+        continue;
+      }
+
+      const boundary = boundaries[pair.refIndex];
+      assignments.push({
+        candidateIndex: boundary.candidateIndex,
+        kind,
+        value: values[pair.valueIndex],
+      });
+      usedRefs.add(pair.refIndex);
+      usedValues.add(pair.valueIndex);
     }
   }
 
-  if (closest === undefined || closestDistance > REFINE_MATCH_TOLERANCE_SEC) {
-    return undefined;
-  }
-
-  return closest;
+  return assignments;
 }
 
 function buildRawRefinementWindows(
@@ -340,27 +366,7 @@ async function refineWindow(
   );
   const global = globalizeIntervals(local, window.startSec);
 
-  const assignments: RefinedBoundaryAssignment[] = [];
-
-  for (const boundary of window.boundaries) {
-    const value = closestBoundary(
-      global,
-      boundary.kind,
-      boundary.targetSec,
-    );
-
-    if (value === undefined) {
-      continue;
-    }
-
-    assignments.push({
-      candidateIndex: boundary.candidateIndex,
-      kind: boundary.kind,
-      value,
-    });
-  }
-
-  return assignments;
+  return matchRefinementBoundaries(global, window.boundaries);
 }
 
 async function refineCandidatesByMergedWindows(
@@ -428,16 +434,37 @@ async function refineCandidatesByMergedWindows(
   return refined;
 }
 
-function renumberIntervals(intervals: FreezeInterval[]): FreezeInterval[] {
-  return intervals
+export function mergeOverlappingFreezeIntervals(
+  intervals: FreezeInterval[],
+): FreezeInterval[] {
+  const sorted = intervals
     .filter((interval) => interval.endSec > interval.startSec)
-    .sort((a, b) => a.startSec - b.startSec)
-    .map((interval, index) => ({
-      ...interval,
-      id: `freeze-${String(index + 1).padStart(4, '0')}`,
-      durationSec: interval.endSec - interval.startSec,
-      selectedForRemoval: false,
-    }));
+    .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+
+  const merged: FreezeInterval[] = [];
+
+  for (const interval of sorted) {
+    const current = merged.at(-1);
+
+    if (!current || interval.startSec >= current.endSec) {
+      merged.push({ ...interval });
+      continue;
+    }
+
+    current.endSec = Math.max(current.endSec, interval.endSec);
+    current.durationSec = current.endSec - current.startSec;
+  }
+
+  return merged;
+}
+
+function renumberIntervals(intervals: FreezeInterval[]): FreezeInterval[] {
+  return mergeOverlappingFreezeIntervals(intervals).map((interval, index) => ({
+    ...interval,
+    id: `freeze-${String(index + 1).padStart(4, '0')}`,
+    durationSec: interval.endSec - interval.startSec,
+    selectedForRemoval: false,
+  }));
 }
 
 export async function detectFreezes(

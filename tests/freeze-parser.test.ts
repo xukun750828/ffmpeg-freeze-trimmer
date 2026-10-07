@@ -9,6 +9,8 @@ import {
   buildRefinementWindows,
   getFastScanProfile,
   mapWithConcurrency,
+  matchRefinementBoundaries,
+  mergeOverlappingFreezeIntervals,
 } from '../electron/main/freeze/freeze-detector';
 
 describe('FreezeParser', () => {
@@ -161,6 +163,62 @@ describe('freeze detection argument builders', () => {
     expect(windows).toHaveLength(2);
     expect(windows[0].endSec - windows[0].startSec).toBeLessThan(6);
     expect(windows[1].endSec - windows[1].startSec).toBeLessThan(6);
+  });
+
+  it('does not reuse one precise boundary for two nearby coarse candidates', () => {
+    const precise = [
+      {
+        id: 'freeze-0001',
+        startSec: 10,
+        endSec: 20,
+        durationSec: 10,
+        selectedForRemoval: false,
+      },
+    ];
+
+    const assignments = matchRefinementBoundaries(precise, [
+      { candidateIndex: 0, kind: 'start', targetSec: 10.2 },
+      { candidateIndex: 1, kind: 'start', targetSec: 11.9 },
+    ]);
+
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0]).toEqual({
+      candidateIndex: 0,
+      kind: 'start',
+      value: 10,
+    });
+  });
+
+  it('merges only overlapping refined intervals and keeps adjacent intervals separate', () => {
+    const merged = mergeOverlappingFreezeIntervals([
+      {
+        id: 'a',
+        startSec: 10,
+        endSec: 15,
+        durationSec: 5,
+        selectedForRemoval: false,
+      },
+      {
+        id: 'b',
+        startSec: 14,
+        endSec: 18,
+        durationSec: 4,
+        selectedForRemoval: false,
+      },
+      {
+        id: 'c',
+        startSec: 18,
+        endSec: 20,
+        durationSec: 2,
+        selectedForRemoval: false,
+      },
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0].startSec).toBe(10);
+    expect(merged[0].endSec).toBe(18);
+    expect(merged[1].startSec).toBe(18);
+    expect(merged[1].endSec).toBe(20);
   });
 
   it('limits concurrent refinement workers and preserves result order', async () => {
