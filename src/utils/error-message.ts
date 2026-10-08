@@ -8,6 +8,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   FREEZE_DETECTION_FAILED: '静止画面检测失败，请检查 FFmpeg 是否可用。',
   INVALID_DETECTION_OPTIONS: '静止检测参数无效。',
   INVALID_MEDIA_DURATION: '视频时长无效。',
+  INVALID_DETECTION_RANGE: '检测起点、方向或数量无效。',
   INVALID_RANGE: '检测到无效的时间区间。',
   NO_KEEP_RANGE: '当前选择会删除整个视频，请至少保留一段内容。',
   OUTPUT_CANNOT_OVERWRITE_SOURCE: '导出路径不能与源视频相同。',

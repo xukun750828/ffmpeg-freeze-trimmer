@@ -190,6 +190,14 @@ select { width: 100%; padding: 7px 8px; }
   background: #14181e;
 }
 .detection-controls label { display: grid; gap: 6px; color: #aeb6c4; font-size: 13px; }
+.detection-controls .detection-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detection-controls .detection-checkbox input {
+  width: auto;
+}
 .detection-note {
   margin: 0;
   color: #8fb0ff !important;

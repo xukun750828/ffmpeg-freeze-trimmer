@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
 import { Timeline } from './components/Timeline';
-import type { AnalysisStatus, DetectionOptions, FreezeInterval } from './types/freeze';
+import type { AnalysisStatus, DetectionDirection, DetectionOptions, FreezeInterval } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
 import { getUserFriendlyError } from './utils/error-message';
 import { formatPreciseTime, formatTime } from './utils/time';
@@ -9,6 +9,7 @@ import { formatPreciseTime, formatTime } from './utils/time';
 const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
   noise: 0.003,
   minDurationSec: 2,
+  hasBackgroundSound: true,
 };
 
 const PREVIEW_LEAD_SEC = 0.5;
@@ -32,6 +33,9 @@ export default function App() {
   const [detectionOptions, setDetectionOptions] = useState<DetectionOptions>(
     DEFAULT_DETECTION_OPTIONS,
   );
+  const [detectionDirection, setDetectionDirection] =
+    useState<DetectionDirection>('forward');
+  const [maxDetectionIntervals, setMaxDetectionIntervals] = useState(5);
 
   const [exportStatus, setExportStatus] = useState<ExportUiStatus>('idle');
   const [exportProgress, setExportProgress] = useState(0);
@@ -95,24 +99,47 @@ export default function App() {
     ? Math.max(0, media.durationSec - selectedDurationSec)
     : 0;
 
-  async function runDetection(
-    selected: OpenVideoResult,
-    probed: MediaInfo,
-    options = detectionOptions,
-  ) {
-    if (!window.desktopApi) return;
+  async function runDetection() {
+    if (
+      !window.desktopApi ||
+      !selection ||
+      !media ||
+      exportStatus === 'exporting' ||
+      analysisStatus === 'detecting'
+    ) {
+      return;
+    }
 
+    const video = videoRef.current;
+    const detectionStartSec = Math.max(
+      0,
+      Math.min(media.durationSec, video?.currentTime ?? currentTimeSec),
+    );
+
+    video?.pause();
+    setCurrentTimeSec(detectionStartSec);
+    setError(null);
     setAnalysisStatus('detecting');
+    setIntervals([]);
     setActiveIntervalId(null);
     setPreviewEndSec(null);
 
     try {
-      const detected = await window.desktopApi.detectFreezes(
-        selected.path,
-        probed.durationSec,
-        options,
+      const detected = await window.desktopApi.detectFreezes({
+        path: selection.path,
+        durationSec: media.durationSec,
+        currentTimeSec: detectionStartSec,
+        direction: detectionDirection,
+        maxIntervals: maxDetectionIntervals,
+        hasAudio: media.hasAudio,
+        options: detectionOptions,
+      });
+      setIntervals(
+        detected.map((interval) => ({
+          ...interval,
+          selectedForRemoval: false,
+        })),
       );
-      setIntervals(detected.map((interval) => ({ ...interval, selectedForRemoval: false })));
       setAnalysisStatus('ready');
     } catch (caught) {
       setIntervals([]);
@@ -138,9 +165,8 @@ export default function App() {
       setPreviewEndSec(null);
       setExportStatus('idle');
       setExportProgress(0);
+      setAnalysisStatus('idle');
       setStatus('ready');
-
-      await runDetection(selected, probed);
     } catch (caught) {
       setError(getUserFriendlyError(caught, '打开视频失败'));
       setStatus('failed');
@@ -168,10 +194,8 @@ export default function App() {
     }
   }
 
-  async function handleRedetect() {
-    if (!selection || !media || exportStatus === 'exporting') return;
-    setError(null);
-    await runDetection(selection, media, detectionOptions);
+  async function handleStartDetection() {
+    await runDetection();
   }
 
   function handlePreview(interval: FreezeInterval) {
@@ -433,10 +457,15 @@ export default function App() {
             intervals={intervals}
             activeIntervalId={activeIntervalId}
             options={detectionOptions}
+            currentTimeSec={currentTimeSec}
+            direction={detectionDirection}
+            maxIntervals={maxDetectionIntervals}
             disabled={!media || exportStatus === 'exporting'}
             selectionDisabled={exportStatus === 'exporting'}
             onOptionsChange={setDetectionOptions}
-            onRedetect={handleRedetect}
+            onDirectionChange={setDetectionDirection}
+            onMaxIntervalsChange={setMaxDetectionIntervals}
+            onStartDetection={handleStartDetection}
             onPreview={handlePreview}
             onToggleRemoval={handleToggleRemoval}
             onSelectAll={handleSelectAll}

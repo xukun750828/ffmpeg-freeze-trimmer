@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildTrimConcatFilter } from '../../electron/main/export/filter-builder';
 import { buildExportArgs } from '../../electron/main/export/ffmpeg-export';
 import { createExportPlan } from '../../electron/main/export/range-planner';
-import { detectFreezes } from '../../electron/main/freeze/freeze-detector';
+import {
+  detectFreezes,
+  detectFreezesDirected,
+} from '../../electron/main/freeze/freeze-detector';
 import { probeMedia } from '../../electron/main/media/media-probe';
 import { runProcess } from '../../electron/main/process/process-runner';
 
@@ -172,6 +175,82 @@ afterEach(async () => {
 });
 
 describe('real FFmpeg pipeline', () => {
+  it(
+    'finds the nearest freeze before or after the current time on demand',
+    async () => {
+      const inputPath = path.join(tempDir, 'directed-nearby-freezes.mp4');
+      await createNearbyFreezeInput(inputPath);
+      const source = await probeMedia(inputPath);
+
+      const baseRequest = {
+        path: inputPath,
+        durationSec: source.durationSec,
+        currentTimeSec: 16,
+        maxIntervals: 1,
+        hasAudio: false,
+        options: {
+          noise: 0.003,
+          minDurationSec: 2,
+          hasBackgroundSound: true,
+        },
+      } as const;
+
+      const forward = await detectFreezesDirected({
+        ...baseRequest,
+        direction: 'forward',
+      });
+      const backward = await detectFreezesDirected({
+        ...baseRequest,
+        direction: 'backward',
+      });
+
+      expect(forward).toHaveLength(1);
+      expect(forward[0].startSec).toBeGreaterThanOrEqual(16.5);
+      expect(forward[0].startSec).toBeLessThan(17.5);
+
+      expect(backward).toHaveLength(1);
+      expect(backward[0].startSec).toBeGreaterThanOrEqual(11.5);
+      expect(backward[0].startSec).toBeLessThan(12.5);
+    },
+    30_000,
+  );
+
+  it(
+    'uses background-sound setting to decide whether silence must confirm a freeze',
+    async () => {
+      const inputPath = path.join(tempDir, 'freeze-with-tone.mp4');
+      await createSyntheticInput(inputPath, true);
+      const source = await probeMedia(inputPath);
+
+      const baseRequest = {
+        path: inputPath,
+        durationSec: source.durationSec,
+        currentTimeSec: 0,
+        direction: 'forward' as const,
+        maxIntervals: 1,
+        hasAudio: true,
+        options: {
+          noise: 0.003,
+          minDurationSec: 1.5,
+          hasBackgroundSound: true,
+        },
+      };
+
+      const visualOnly = await detectFreezesDirected(baseRequest);
+      const requireSilence = await detectFreezesDirected({
+        ...baseRequest,
+        options: {
+          ...baseRequest.options,
+          hasBackgroundSound: false,
+        },
+      });
+
+      expect(visualOnly.length).toBeGreaterThanOrEqual(1);
+      expect(requireSilence).toEqual([]);
+    },
+    30_000,
+  );
+
   it(
     'uses the fast scan path on long media and refines freeze boundaries',
     async () => {

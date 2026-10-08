@@ -4,18 +4,14 @@ import type {
   ExportProgressEvent,
   ExportRequest,
 } from '../main/export/types';
-import type { DetectionOptions, FreezeInterval } from '../main/freeze/types';
+import type { DirectedDetectionRequest, FreezeInterval } from '../main/freeze/types';
 import type { MediaInfo, OpenVideoResult } from '../main/media/types';
 
 export interface DesktopApi {
   getAppVersion(): Promise<string>;
   openVideo(): Promise<OpenVideoResult | null>;
   probeMedia(path: string): Promise<MediaInfo>;
-  detectFreezes(
-    path: string,
-    durationSec: number,
-    options: DetectionOptions,
-  ): Promise<FreezeInterval[]>;
+  detectFreezes(request: DirectedDetectionRequest): Promise<FreezeInterval[]>;
   chooseOutputPath(defaultName: string): Promise<string | null>;
   startExport(request: ExportRequest): Promise<{ jobId: string }>;
   cancelExport(jobId: string): Promise<void>;
@@ -28,12 +24,8 @@ const desktopApi: DesktopApi = {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   openVideo: () => ipcRenderer.invoke('media:open'),
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
-  detectFreezes: (path, durationSec, options) =>
-    ipcRenderer.invoke('freeze:detect', {
-      path,
-      durationSec,
-      options,
-    }),
+  detectFreezes: (request) =>
+    ipcRenderer.invoke('freeze:detect', request),
   chooseOutputPath: (defaultName) =>
     ipcRenderer.invoke('export:choose-output', defaultName),
   startExport: (request) => ipcRenderer.invoke('export:start', request),

@@ -1,7 +1,8 @@
 import { resolveFfmpegPath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import { FreezeParser } from './freeze-parser';
-import type { DetectionOptions, FreezeInterval } from './types';
+import { detectSilenceInRange, filterFreezesBySilence } from './silence-detector';
+import type { DetectionOptions, DirectedDetectionRequest, FreezeInterval } from './types';
 
 const FAST_SCAN_THRESHOLD_SEC = 30;
 const FAST_SCAN_HEIGHT = 360;
@@ -10,6 +11,8 @@ const REFINE_WINDOW_MERGE_GAP_SEC = 0.5;
 const MAX_REFINEMENT_WINDOW_SEC = 12;
 const REFINE_MATCH_TOLERANCE_SEC = 2.5;
 const REFINEMENT_CONCURRENCY = 4;
+const DIRECTED_SEARCH_CHUNK_SEC = 300;
+const DIRECTED_SEARCH_MIN_CONTEXT_SEC = 5;
 
 export interface FastScanProfile {
   fps: number;
@@ -465,6 +468,250 @@ function renumberIntervals(intervals: FreezeInterval[]): FreezeInterval[] {
     durationSec: interval.endSec - interval.startSec,
     selectedForRemoval: false,
   }));
+}
+
+function buildFastRangeFreezeDetectArgs(
+  inputPath: string,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  options: DetectionOptions,
+): string[] {
+  const profile = getFastScanProfile(options);
+  const durationSec = Math.max(0, rangeEndSec - rangeStartSec);
+
+  return [
+    '-hide_banner',
+    '-nostats',
+    '-ss',
+    rangeStartSec.toFixed(6),
+    '-t',
+    durationSec.toFixed(6),
+    '-i',
+    inputPath,
+    '-map',
+    '0:v:0',
+    '-vf',
+    [
+      `fps=${profile.fps}`,
+      `scale=-2:${profile.height}:flags=fast_bilinear`,
+      `freezedetect=n=${options.noise}:d=${options.minDurationSec}`,
+    ].join(','),
+    '-an',
+    '-f',
+    'null',
+    '-',
+  ];
+}
+
+async function detectVisualFreezesInRange(
+  inputPath: string,
+  mediaDurationSec: number,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  options: DetectionOptions,
+  signal?: AbortSignal,
+): Promise<FreezeInterval[]> {
+  const startSec = Math.max(0, Math.min(mediaDurationSec, rangeStartSec));
+  const endSec = Math.max(startSec, Math.min(mediaDurationSec, rangeEndSec));
+  const rangeDurationSec = endSec - startSec;
+
+  if (rangeDurationSec <= 0) {
+    return [];
+  }
+
+  if (rangeDurationSec < FAST_SCAN_THRESHOLD_SEC) {
+    const local = await runDetectionPass(
+      buildRefineFreezeDetectArgs(
+        inputPath,
+        startSec,
+        rangeDurationSec,
+        options,
+      ),
+      rangeDurationSec,
+      signal,
+    );
+
+    return renumberIntervals(globalizeIntervals(local, startSec));
+  }
+
+  const localCandidates = await runDetectionPass(
+    buildFastRangeFreezeDetectArgs(
+      inputPath,
+      startSec,
+      endSec,
+      options,
+    ),
+    rangeDurationSec,
+    signal,
+  );
+
+  if (localCandidates.length === 0) {
+    return [];
+  }
+
+  const candidates = globalizeIntervals(localCandidates, startSec);
+  const refined = await refineCandidatesByMergedWindows(
+    inputPath,
+    mediaDurationSec,
+    candidates,
+    options,
+    signal,
+  );
+
+  return renumberIntervals(refined);
+}
+
+async function applyAudioConfirmation(
+  inputPath: string,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  visualIntervals: FreezeInterval[],
+  request: DirectedDetectionRequest,
+  signal?: AbortSignal,
+): Promise<FreezeInterval[]> {
+  if (
+    visualIntervals.length === 0 ||
+    request.options.hasBackgroundSound ||
+    !request.hasAudio
+  ) {
+    return visualIntervals;
+  }
+
+  const silences = await detectSilenceInRange(
+    inputPath,
+    rangeStartSec,
+    rangeEndSec,
+    request.options,
+    signal,
+  );
+
+  return filterFreezesBySilence(
+    visualIntervals,
+    silences,
+    request.options.minDurationSec,
+  );
+}
+
+function selectDirectedIntervals(
+  intervals: FreezeInterval[],
+  request: DirectedDetectionRequest,
+): FreezeInterval[] {
+  const origin = request.currentTimeSec;
+  const merged = mergeOverlappingFreezeIntervals(intervals);
+
+  if (request.direction === 'forward') {
+    return renumberIntervals(
+      merged
+        .filter((interval) => interval.endSec > origin)
+        .sort((a, b) => a.startSec - b.startSec)
+        .slice(0, request.maxIntervals),
+    );
+  }
+
+  const nearest = merged
+    .filter((interval) => interval.startSec < origin)
+    .sort((a, b) => b.endSec - a.endSec)
+    .slice(0, request.maxIntervals)
+    .sort((a, b) => a.startSec - b.startSec);
+
+  return renumberIntervals(nearest);
+}
+
+export async function detectFreezesDirected(
+  request: DirectedDetectionRequest,
+  signal?: AbortSignal,
+): Promise<FreezeInterval[]> {
+  const origin = Math.max(
+    0,
+    Math.min(request.durationSec, request.currentTimeSec),
+  );
+  const contextSec = Math.max(
+    DIRECTED_SEARCH_MIN_CONTEXT_SEC,
+    request.options.minDurationSec + REFINE_MARGIN_SEC + 1,
+  );
+
+  let cursor = origin;
+  let collected: FreezeInterval[] = [];
+
+  while (
+    request.direction === 'forward'
+      ? cursor < request.durationSec
+      : cursor > 0
+  ) {
+    if (signal?.aborted) {
+      throw new Error('PROCESS_ABORTED');
+    }
+
+    const rangeStartSec =
+      request.direction === 'forward'
+        ? Math.max(0, cursor - contextSec)
+        : Math.max(0, cursor - DIRECTED_SEARCH_CHUNK_SEC);
+
+    const rangeEndSec =
+      request.direction === 'forward'
+        ? Math.min(request.durationSec, cursor + DIRECTED_SEARCH_CHUNK_SEC)
+        : Math.min(request.durationSec, cursor + contextSec);
+
+    const visual = await detectVisualFreezesInRange(
+      request.path,
+      request.durationSec,
+      rangeStartSec,
+      rangeEndSec,
+      request.options,
+      signal,
+    );
+
+    const confirmed = await applyAudioConfirmation(
+      request.path,
+      rangeStartSec,
+      rangeEndSec,
+      visual,
+      request,
+      signal,
+    );
+
+    // A freeze touching the unexplored edge may still continue into the next
+    // chunk. Defer it until the overlapping next chunk so we do not return a
+    // truncated boundary just because the chunk ended.
+    const stableConfirmed = confirmed.filter((interval) => {
+      if (
+        request.direction === 'forward' &&
+        rangeEndSec < request.durationSec
+      ) {
+        return interval.endSec < rangeEndSec - 0.25;
+      }
+
+      if (request.direction === 'backward' && rangeStartSec > 0) {
+        return interval.startSec > rangeStartSec + 0.25;
+      }
+
+      return true;
+    });
+
+    collected = mergeOverlappingFreezeIntervals([
+      ...collected,
+      ...stableConfirmed,
+    ]);
+
+    const selected = selectDirectedIntervals(collected, request);
+    if (selected.length >= request.maxIntervals) {
+      return selected;
+    }
+
+    if (request.direction === 'forward') {
+      if (rangeEndSec >= request.durationSec) {
+        break;
+      }
+      cursor = rangeEndSec;
+    } else {
+      if (rangeStartSec <= 0) {
+        break;
+      }
+      cursor = rangeStartSec;
+    }
+  }
+
+  return selectDirectedIntervals(collected, request);
 }
 
 export async function detectFreezes(

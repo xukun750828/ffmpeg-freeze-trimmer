@@ -3,7 +3,7 @@ import type {
   ExportProgressEvent,
   ExportRequest,
 } from './types/export';
-import type { DetectionOptions, FreezeInterval } from './types/freeze';
+import type { DirectedDetectionRequest, FreezeInterval } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
 
 export {};
@@ -14,11 +14,7 @@ declare global {
       getAppVersion(): Promise<string>;
       openVideo(): Promise<OpenVideoResult | null>;
       probeMedia(path: string): Promise<MediaInfo>;
-      detectFreezes(
-        path: string,
-        durationSec: number,
-        options: DetectionOptions,
-      ): Promise<FreezeInterval[]>;
+      detectFreezes(request: DirectedDetectionRequest): Promise<FreezeInterval[]>;
       chooseOutputPath(defaultName: string): Promise<string | null>;
       startExport(request: ExportRequest): Promise<{ jobId: string }>;
       cancelExport(jobId: string): Promise<void>;

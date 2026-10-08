@@ -1,4 +1,9 @@
-import type { AnalysisStatus, DetectionOptions, FreezeInterval } from '../types/freeze';
+import type {
+  AnalysisStatus,
+  DetectionDirection,
+  DetectionOptions,
+  FreezeInterval,
+} from '../types/freeze';
 import { formatPreciseTime } from '../utils/time';
 
 interface FreezePanelProps {
@@ -6,10 +11,15 @@ interface FreezePanelProps {
   intervals: FreezeInterval[];
   activeIntervalId: string | null;
   options: DetectionOptions;
+  currentTimeSec: number;
+  direction: DetectionDirection;
+  maxIntervals: number;
   disabled: boolean;
   selectionDisabled: boolean;
   onOptionsChange: (options: DetectionOptions) => void;
-  onRedetect: () => void;
+  onDirectionChange: (direction: DetectionDirection) => void;
+  onMaxIntervalsChange: (count: number) => void;
+  onStartDetection: () => void;
   onPreview: (interval: FreezeInterval) => void;
   onToggleRemoval: (intervalId: string) => void;
   onSelectAll: (selected: boolean) => void;
@@ -20,10 +30,15 @@ export function FreezePanel({
   intervals,
   activeIntervalId,
   options,
+  currentTimeSec,
+  direction,
+  maxIntervals,
   disabled,
   selectionDisabled,
   onOptionsChange,
-  onRedetect,
+  onDirectionChange,
+  onMaxIntervalsChange,
+  onStartDetection,
   onPreview,
   onToggleRemoval,
   onSelectAll,
@@ -32,14 +47,14 @@ export function FreezePanel({
   const allSelected = intervals.length > 0 && selectedCount === intervals.length;
   const summary =
     status === 'detecting'
-      ? '正在检测静止画面…'
+      ? '正在从当前时间点检测…'
       : status === 'ready'
         ? intervals.length > 0
           ? `发现 ${intervals.length} 个静止区间`
-          : '未发现满足条件的静止区间'
+          : '当前方向未发现满足条件的静止区间'
         : status === 'failed'
           ? '检测失败'
-          : '尚未检测';
+          : '设置参数后点击“启动检测”';
 
   return (
     <section className="freeze-panel" aria-label="静止区间">
@@ -48,15 +63,20 @@ export function FreezePanel({
           <h2>静止区间</h2>
           <p className="panel-summary">{summary}</p>
         </div>
-        <button type="button" onClick={onRedetect} disabled={disabled || status === 'detecting'}>
-          {status === 'detecting' ? '检测中…' : '重新检测'}
+        <button
+          type="button"
+          onClick={onStartDetection}
+          disabled={disabled || status === 'detecting'}
+        >
+          {status === 'detecting' ? '检测中…' : '启动检测'}
         </button>
       </div>
 
       <div className="detection-controls">
         <p className="detection-note">
-          30 秒以上视频会自动使用“快速粗扫 + 合并边界窗口 + 最多 4 路原分辨率精修”。
+          从播放器当前时间 {formatPreciseTime(currentTimeSec)} 开始，按指定方向查找静止区间；找到指定数量后自动停止。
         </p>
+
         <label>
           <span>最短静止时长</span>
           <div className="inline-input">
@@ -98,6 +118,59 @@ export function FreezePanel({
             <option value={0.015}>更宽松 · 0.015</option>
           </select>
         </label>
+
+        <label className="detection-checkbox">
+          <input
+            aria-label="有背景声音"
+            type="checkbox"
+            checked={options.hasBackgroundSound}
+            disabled={disabled || status === 'detecting'}
+            onChange={(event) =>
+              onOptionsChange({
+                ...options,
+                hasBackgroundSound: event.target.checked,
+              })
+            }
+          />
+          <span>有背景声音</span>
+        </label>
+
+        <label>
+          <span>检测方向</span>
+          <select
+            aria-label="检测方向"
+            value={direction}
+            disabled={disabled || status === 'detecting'}
+            onChange={(event) =>
+              onDirectionChange(event.target.value as DetectionDirection)
+            }
+          >
+            <option value="forward">从当前时间向后检测</option>
+            <option value="backward">从当前时间向前检测</option>
+          </select>
+        </label>
+
+        <label>
+          <span>检测几个静止区间</span>
+          <select
+            aria-label="检测静止区间数量"
+            value={maxIntervals}
+            disabled={disabled || status === 'detecting'}
+            onChange={(event) => onMaxIntervalsChange(Number(event.target.value))}
+          >
+            <option value={1}>1 个</option>
+            <option value={3}>3 个</option>
+            <option value={5}>5 个</option>
+            <option value={10}>10 个</option>
+            <option value={20}>20 个</option>
+          </select>
+        </label>
+
+        {!options.hasBackgroundSound && (
+          <p className="detection-note">
+            “无背景声音”模式：有音轨时会同时要求静止区间满足静音条件；无音轨视频只按画面检测。
+          </p>
+        )}
       </div>
 
       {intervals.length > 0 && (

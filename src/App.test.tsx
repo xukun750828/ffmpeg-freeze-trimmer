@@ -7,7 +7,9 @@ let pauseSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
-  pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+  pauseSpy = vi
+    .spyOn(HTMLMediaElement.prototype, 'pause')
+    .mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -17,7 +19,7 @@ afterEach(() => {
 
 function createDesktopApi() {
   return {
-    getAppVersion: vi.fn().mockResolvedValue('0.1.0'),
+    getAppVersion: vi.fn().mockResolvedValue('0.1.4'),
     openVideo: vi.fn().mockResolvedValue({
       path: 'C:\\Videos\\demo.mp4',
       name: 'demo.mp4',
@@ -49,7 +51,9 @@ function createDesktopApi() {
         selectedForRemoval: false,
       },
     ]),
-    chooseOutputPath: vi.fn().mockResolvedValue('C:\\Videos\\demo_trimmed.mp4'),
+    chooseOutputPath: vi
+      .fn()
+      .mockResolvedValue('C:\\Videos\\demo_trimmed.mp4'),
     startExport: vi.fn().mockResolvedValue({ jobId: 'job-1' }),
     cancelExport: vi.fn().mockResolvedValue(undefined),
     onExportProgress: vi.fn().mockImplementation(() => () => undefined),
@@ -58,40 +62,72 @@ function createDesktopApi() {
   };
 }
 
-async function openVideoAndWait() {
+async function importVideoAndWait() {
   fireEvent.click(screen.getByRole('button', { name: '导入本地 MP4' }));
+  await waitFor(() => {
+    expect(screen.getByText('设置参数后点击“启动检测”')).toBeInTheDocument();
+    expect(screen.getByText('1920 × 1080')).toBeInTheDocument();
+  });
+}
+
+async function startDetectionAndWait() {
+  fireEvent.click(screen.getByRole('button', { name: '启动检测' }));
   await waitFor(() => {
     expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
   });
 }
 
-describe('App media import and freeze review flow', () => {
-  it('opens a local video, probes media, and automatically detects freeze intervals', async () => {
+describe('App media import and manual directed freeze detection', () => {
+  it('imports a local video without automatically starting freeze detection', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
 
     expect(desktopApi.probeMedia).toHaveBeenCalledWith('C:\\Videos\\demo.mp4');
-    expect(desktopApi.detectFreezes).toHaveBeenCalledWith(
-      'C:\\Videos\\demo.mp4',
-      125.5,
-      {
-        noise: 0.003,
-        minDurationSec: 2,
-      },
-    );
-    expect(screen.getByText('00:12.400 → 00:18.200')).toBeInTheDocument();
-    expect(screen.getByText('00:31.100 → 00:38.500')).toBeInTheDocument();
+    expect(desktopApi.detectFreezes).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '启动检测' })).toBeEnabled();
+    expect(screen.getByLabelText('检测方向')).toHaveValue('forward');
+    expect(screen.getByLabelText('检测静止区间数量')).toHaveValue('5');
+    expect(screen.getByLabelText('有背景声音')).toBeChecked();
   });
 
-  it('uses edited detection parameters when re-running detection', async () => {
+  it('starts detection from the current playback time with the default direction and count', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 42.5;
+    fireEvent.timeUpdate(video);
+
+    await startDetectionAndWait();
+
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(desktopApi.detectFreezes).toHaveBeenCalledWith({
+      path: 'C:\\Videos\\demo.mp4',
+      durationSec: 125.5,
+      currentTimeSec: 42.5,
+      direction: 'forward',
+      maxIntervals: 5,
+      hasAudio: true,
+      options: {
+        noise: 0.003,
+        minDurationSec: 2,
+        hasBackgroundSound: true,
+      },
+    });
+  });
+
+  it('uses edited visual, audio, direction, and interval-count settings', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
 
     fireEvent.change(screen.getByLabelText('最短静止时长'), {
       target: { value: '3.5' },
@@ -99,27 +135,47 @@ describe('App media import and freeze review flow', () => {
     fireEvent.change(screen.getByLabelText('允许画面变化'), {
       target: { value: '0.008' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '重新检测' }));
-
-    await waitFor(() => {
-      expect(desktopApi.detectFreezes).toHaveBeenLastCalledWith(
-        'C:\\Videos\\demo.mp4',
-        125.5,
-        {
-          noise: 0.008,
-          minDurationSec: 3.5,
-        },
-      );
+    fireEvent.click(screen.getByLabelText('有背景声音'));
+    fireEvent.change(screen.getByLabelText('检测方向'), {
+      target: { value: 'backward' },
     });
+    fireEvent.change(screen.getByLabelText('检测静止区间数量'), {
+      target: { value: '3' },
+    });
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 90;
+    fireEvent.timeUpdate(video);
+
+    await startDetectionAndWait();
+
+    expect(desktopApi.detectFreezes).toHaveBeenCalledWith({
+      path: 'C:\\Videos\\demo.mp4',
+      durationSec: 125.5,
+      currentTimeSec: 90,
+      direction: 'backward',
+      maxIntervals: 3,
+      hasAudio: true,
+      options: {
+        noise: 0.008,
+        minDurationSec: 3.5,
+        hasBackgroundSound: false,
+      },
+    });
+    expect(
+      screen.getByText(/无背景声音.*静音条件/),
+    ).toBeInTheDocument();
   });
 
-  it('previews an interval with lead and tail context', async () => {
+  it('previews a detected interval with lead and tail context', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+    await startDetectionAndWait();
 
+    pauseSpy.mockClear();
     fireEvent.click(screen.getByRole('button', { name: '预览静止区间 1' }));
 
     const video = document.querySelector('video');
@@ -127,7 +183,9 @@ describe('App media import and freeze review flow', () => {
     expect(video!.currentTime).toBeCloseTo(11.9, 3);
     expect(playSpy).toHaveBeenCalledOnce();
 
-    const activeRow = screen.getByRole('button', { name: '预览静止区间 1' }).closest('article');
+    const activeRow = screen
+      .getByRole('button', { name: '预览静止区间 1' })
+      .closest('article');
     expect(activeRow).toHaveAttribute('data-active', 'true');
 
     video!.currentTime = 18.7;
@@ -140,14 +198,14 @@ describe('App media import and freeze review flow', () => {
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+    await startDetectionAndWait();
 
     fireEvent.click(screen.getByRole('button', { name: '预览静止区间 1' }));
 
     const video = document.querySelector('video');
     expect(video).not.toBeNull();
 
-    // Finish the programmatic preview seek first, then simulate a user drag.
     fireEvent.seeked(video!);
     fireEvent.seeking(video!);
 
@@ -162,14 +220,20 @@ describe('App media import and freeze review flow', () => {
     expect(pauseSpy).not.toHaveBeenCalled();
   });
 
-  it('processes the MP4 selected by the native File menu without reopening the dialog', async () => {
+  it('loads a native-menu selected MP4 without automatically detecting', async () => {
     const desktopApi = createDesktopApi();
     let menuSelectionListener:
       | ((selection: { path: string; name: string; sourceUrl: string }) => void)
       | null = null;
 
     desktopApi.onMenuVideoSelected.mockImplementation(
-      (listener: (selection: { path: string; name: string; sourceUrl: string }) => void) => {
+      (
+        listener: (selection: {
+          path: string;
+          name: string;
+          sourceUrl: string;
+        }) => void,
+      ) => {
         menuSelectionListener = listener;
         return () => undefined;
       },
@@ -178,9 +242,7 @@ describe('App media import and freeze review flow', () => {
 
     render(<App />);
 
-    expect(desktopApi.onMenuVideoSelected).toHaveBeenCalledOnce();
     expect(menuSelectionListener).not.toBeNull();
-
     menuSelectionListener!({
       path: 'C:\\Videos\\menu-demo.mp4',
       name: 'menu-demo.mp4',
@@ -188,11 +250,14 @@ describe('App media import and freeze review flow', () => {
     });
 
     await waitFor(() => {
-      expect(desktopApi.probeMedia).toHaveBeenCalledWith('C:\\Videos\\menu-demo.mp4');
-      expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+      expect(desktopApi.probeMedia).toHaveBeenCalledWith(
+        'C:\\Videos\\menu-demo.mp4',
+      );
+      expect(screen.getByText('设置参数后点击“启动检测”')).toBeInTheDocument();
     });
 
     expect(desktopApi.openVideo).not.toHaveBeenCalled();
+    expect(desktopApi.detectFreezes).not.toHaveBeenCalled();
   });
 
   it('keeps the empty state when the file dialog is cancelled', async () => {
@@ -219,7 +284,8 @@ describe('selection, timeline, and export workflow', () => {
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+    await startDetectionAndWait();
 
     fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
 
@@ -238,7 +304,8 @@ describe('selection, timeline, and export workflow', () => {
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+    await startDetectionAndWait();
 
     fireEvent.click(screen.getByRole('button', { name: '时间轴静止区间 2' }));
 
@@ -253,7 +320,8 @@ describe('selection, timeline, and export workflow', () => {
     window.desktopApi = desktopApi;
 
     render(<App />);
-    await openVideoAndWait();
+    await importVideoAndWait();
+    await startDetectionAndWait();
 
     fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
     fireEvent.click(screen.getByRole('button', { name: '导出视频' }));

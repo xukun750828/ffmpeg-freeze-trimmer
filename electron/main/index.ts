@@ -3,8 +3,8 @@ import path from 'node:path';
 import { installApplicationMenu } from './app-menu';
 import { VideoExporter } from './export/video-exporter';
 import type { ExportRequest } from './export/types';
-import { detectFreezes } from './freeze/freeze-detector';
-import type { DetectionOptions } from './freeze/types';
+import { detectFreezesDirected } from './freeze/freeze-detector';
+import type { DetectionOptions, DirectedDetectionRequest } from './freeze/types';
 import { openVideoDialog } from './media/media-importer';
 import { probeMedia } from './media/media-probe';
 import { clearMediaRegistry, registerMediaProtocol } from './media/media-protocol';
@@ -55,7 +55,8 @@ function validateDetectionOptions(options: DetectionOptions): void {
     options.noise > 1 ||
     !Number.isFinite(options.minDurationSec) ||
     options.minDurationSec < 0.1 ||
-    options.minDurationSec > 3600
+    options.minDurationSec > 3600 ||
+    typeof options.hasBackgroundSound !== 'boolean'
   ) {
     throw new Error('INVALID_DETECTION_OPTIONS');
   }
@@ -72,25 +73,26 @@ app.whenReady().then(() => {
   ipcMain.handle('media:probe', (_event, mediaPath: string) => probeMedia(mediaPath));
   ipcMain.handle(
     'freeze:detect',
-    (
-      _event,
-      request: {
-        path: string;
-        durationSec: number;
-        options: DetectionOptions;
-      },
-    ) => {
+    (_event, request: DirectedDetectionRequest) => {
       validateDetectionOptions(request.options);
 
       if (!Number.isFinite(request.durationSec) || request.durationSec <= 0) {
         throw new Error('INVALID_MEDIA_DURATION');
       }
 
-      return detectFreezes(
-        request.path,
-        request.durationSec,
-        request.options,
-      );
+      if (
+        !Number.isFinite(request.currentTimeSec) ||
+        request.currentTimeSec < 0 ||
+        request.currentTimeSec > request.durationSec ||
+        !Number.isInteger(request.maxIntervals) ||
+        request.maxIntervals < 1 ||
+        request.maxIntervals > 50 ||
+        !['forward', 'backward'].includes(request.direction)
+      ) {
+        throw new Error('INVALID_DETECTION_RANGE');
+      }
+
+      return detectFreezesDirected(request);
     },
   );
 
