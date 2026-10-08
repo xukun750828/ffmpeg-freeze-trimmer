@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
+import { HoverPreviewProvider } from './components/HoverPreviewProvider';
 import { NativeTimelineHoverPreview } from './components/NativeTimelineHoverPreview';
 import { Timeline } from './components/Timeline';
 import type {
@@ -461,10 +462,12 @@ export default function App() {
       <section className="workspace" aria-label="视频审核工作区">
         <div className="player-panel">
           {selection && media ? (
-            <>
+            <HoverPreviewProvider
+              durationSec={media.durationSec}
+              previewSourceUrl={selection.sourceUrl}
+            >
               <NativeTimelineHoverPreview
                 durationSec={media.durationSec}
-                previewSourceUrl={selection.sourceUrl}
               >
                 <video
                   ref={videoRef}
@@ -496,7 +499,6 @@ export default function App() {
                 currentTimeSec={currentTimeSec}
                 intervals={intervals}
                 activeIntervalId={activeIntervalId}
-                previewSourceUrl={selection.sourceUrl}
                 onPreview={handlePreview}
               />
 
@@ -505,7 +507,7 @@ export default function App() {
                 <span>删除 {formatPreciseTime(selectedDurationSec)}</span>
                 <span>输出约 {formatPreciseTime(estimatedOutputSec)}</span>
               </div>
-            </>
+            </HoverPreviewProvider>
           ) : (
             <div className="player-placeholder">
               <strong>导入一个本地 MP4</strong>

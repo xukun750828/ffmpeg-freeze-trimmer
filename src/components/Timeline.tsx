@@ -1,16 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
 import type { FreezeInterval } from '../types/freeze';
-import { formatPreciseTime } from '../utils/time';
-
-const HOVER_PREVIEW_WIDTH_PX = 224;
-const HOVER_SEEK_DEBOUNCE_MS = 80;
+import { useHoverPreview } from './HoverPreviewProvider';
 
 interface TimelineProps {
   durationSec: number;
   currentTimeSec: number;
   intervals: FreezeInterval[];
   activeIntervalId: string | null;
-  previewSourceUrl: string;
   onPreview: (interval: FreezeInterval) => void;
 }
 
@@ -19,35 +14,9 @@ export function Timeline({
   currentTimeSec,
   intervals,
   activeIntervalId,
-  previewSourceUrl,
   onPreview,
 }: TimelineProps) {
-  const previewVideoRef = useRef<HTMLVideoElement>(null);
-  const pendingSeekRef = useRef<number | null>(null);
-  const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const [hoverVisible, setHoverVisible] = useState(false);
-  const [hoverTimeSec, setHoverTimeSec] = useState(0);
-  const [hoverLeftPx, setHoverLeftPx] = useState(
-    HOVER_PREVIEW_WIDTH_PX / 2,
-  );
-
-  useEffect(() => {
-    return () => {
-      if (seekTimerRef.current) {
-        clearTimeout(seekTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    setHoverVisible(false);
-    pendingSeekRef.current = null;
-    if (seekTimerRef.current) {
-      clearTimeout(seekTimerRef.current);
-      seekTimerRef.current = null;
-    }
-  }, [previewSourceUrl]);
+  const { requestPreview, hidePreview } = useHoverPreview();
 
   if (durationSec <= 0) return null;
 
@@ -55,34 +24,6 @@ export function Timeline({
     100,
     Math.max(0, (currentTimeSec / durationSec) * 100),
   );
-
-  function seekPreviewVideo(timeSec: number) {
-    const video = previewVideoRef.current;
-    if (!video || video.readyState < 1) {
-      pendingSeekRef.current = timeSec;
-      return;
-    }
-
-    pendingSeekRef.current = null;
-    const target = Math.max(0, Math.min(durationSec, timeSec));
-
-    if (Math.abs(video.currentTime - target) >= 0.03) {
-      video.currentTime = target;
-    }
-  }
-
-  function schedulePreviewSeek(timeSec: number) {
-    pendingSeekRef.current = timeSec;
-
-    if (seekTimerRef.current) {
-      clearTimeout(seekTimerRef.current);
-    }
-
-    seekTimerRef.current = setTimeout(() => {
-      seekTimerRef.current = null;
-      seekPreviewVideo(timeSec);
-    }, HOVER_SEEK_DEBOUNCE_MS);
-  }
 
   function handleTimelineMouseMove(
     event: React.MouseEvent<HTMLDivElement>,
@@ -95,41 +36,14 @@ export function Timeline({
       Math.max(0, event.clientX - rect.left),
     );
     const timeSec = (relativeX / rect.width) * durationSec;
-    const halfPreview = HOVER_PREVIEW_WIDTH_PX / 2;
-    const clampedLeft = Math.min(
-      Math.max(relativeX, halfPreview),
-      Math.max(halfPreview, rect.width - halfPreview),
-    );
 
-    setHoverVisible(true);
-    setHoverTimeSec(timeSec);
-    setHoverLeftPx(clampedLeft);
-    schedulePreviewSeek(timeSec);
-  }
-
-  function handleTimelineMouseLeave() {
-    setHoverVisible(false);
-    pendingSeekRef.current = null;
-
-    if (seekTimerRef.current) {
-      clearTimeout(seekTimerRef.current);
-      seekTimerRef.current = null;
-    }
-  }
-
-  function handlePreviewMetadataLoaded(
-    event: React.SyntheticEvent<HTMLVideoElement>,
-  ) {
-    const pendingSeek = pendingSeekRef.current;
-    if (pendingSeek === null) return;
-
-    const video = event.currentTarget;
-    const target = Math.max(
-      0,
-      Math.min(durationSec, pendingSeek),
-    );
-    pendingSeekRef.current = null;
-    video.currentTime = target;
+    requestPreview({
+      timeSec,
+      clientX: event.clientX,
+      boundsLeft: rect.left,
+      boundsRight: rect.right,
+      anchorY: rect.top,
+    });
   }
 
   return (
@@ -138,29 +52,8 @@ export function Timeline({
         className="timeline-hover-zone"
         data-testid="timeline-hover-zone"
         onMouseMove={handleTimelineMouseMove}
-        onMouseLeave={handleTimelineMouseLeave}
+        onMouseLeave={hidePreview}
       >
-        <div
-          className={`timeline-hover-preview${hoverVisible ? ' visible' : ''}`}
-          data-testid="timeline-hover-preview"
-          aria-hidden={hoverVisible ? 'false' : 'true'}
-          style={{ left: `${hoverLeftPx}px` }}
-        >
-          <video
-            ref={previewVideoRef}
-            className="timeline-hover-video"
-            src={previewSourceUrl}
-            preload="metadata"
-            muted
-            playsInline
-            aria-label="时间轴画面预览"
-            onLoadedMetadata={handlePreviewMetadataLoaded}
-          />
-          <div className="timeline-hover-time">
-            {formatPreciseTime(hoverTimeSec)}
-          </div>
-        </div>
-
         <div className="timeline-track">
           {intervals.map((interval, index) => {
             const left = (interval.startSec / durationSec) * 100;

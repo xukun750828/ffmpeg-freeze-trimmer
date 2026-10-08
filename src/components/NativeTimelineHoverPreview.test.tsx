@@ -1,17 +1,24 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { HoverPreviewProvider } from './HoverPreviewProvider';
 import { NativeTimelineHoverPreview } from './NativeTimelineHoverPreview';
 
-describe('NativeTimelineHoverPreview', () => {
-  it('shows a preview only over the native progress-bar band without moving the main video', () => {
-    render(
-      <NativeTimelineHoverPreview
-        durationSec={100}
-        previewSourceUrl="app-media://video/native-preview"
-      >
+function renderNative(durationSec = 100) {
+  return render(
+    <HoverPreviewProvider
+      durationSec={durationSec}
+      previewSourceUrl="app-media://video/native-preview"
+    >
+      <NativeTimelineHoverPreview durationSec={durationSec}>
         <video aria-label="主播放器" />
-      </NativeTimelineHoverPreview>,
-    );
+      </NativeTimelineHoverPreview>
+    </HoverPreviewProvider>,
+  );
+}
+
+describe('NativeTimelineHoverPreview', () => {
+  it('shows the shared preview only over the native progress-bar band without moving the main video', () => {
+    renderNative(100);
 
     const zone = screen.getByTestId('native-timeline-hover-zone');
     vi.spyOn(zone, 'getBoundingClientRect').mockReturnValue({
@@ -26,9 +33,7 @@ describe('NativeTimelineHoverPreview', () => {
       toJSON: () => ({}),
     });
 
-    const preview = screen.getByTestId(
-      'native-timeline-hover-preview',
-    );
+    const preview = screen.getByTestId('shared-hover-preview');
     const mainVideo = screen.getByLabelText(
       '主播放器',
     ) as HTMLVideoElement;
@@ -50,7 +55,7 @@ describe('NativeTimelineHoverPreview', () => {
     expect(mainVideo.currentTime).toBe(12);
 
     const previewVideo = screen.getByLabelText(
-      '播放器时间轴画面预览',
+      '共享时间轴画面预览',
     ) as HTMLVideoElement;
     fireEvent.loadedMetadata(previewVideo);
 
@@ -61,15 +66,8 @@ describe('NativeTimelineHoverPreview', () => {
     expect(preview).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('clamps the preview card near the native progress-bar edges', () => {
-    render(
-      <NativeTimelineHoverPreview
-        durationSec={200}
-        previewSourceUrl="app-media://video/native-preview"
-      >
-        <video aria-label="主播放器" />
-      </NativeTimelineHoverPreview>,
-    );
+  it('clamps the shared preview card near the native progress-bar edges', () => {
+    renderNative(200);
 
     const zone = screen.getByTestId('native-timeline-hover-zone');
     vi.spyOn(zone, 'getBoundingClientRect').mockReturnValue({
@@ -88,16 +86,16 @@ describe('NativeTimelineHoverPreview', () => {
       clientX: 130,
       clientY: 578,
     });
-    expect(
-      screen.getByTestId('native-timeline-hover-preview'),
-    ).toHaveStyle({ left: '112px' });
+    expect(screen.getByTestId('shared-hover-preview')).toHaveStyle({
+      left: '212px',
+    });
 
     fireEvent.mouseMove(zone, {
       clientX: 1070,
       clientY: 578,
     });
-    expect(
-      screen.getByTestId('native-timeline-hover-preview'),
-    ).toHaveStyle({ left: '888px' });
+    expect(screen.getByTestId('shared-hover-preview')).toHaveStyle({
+      left: '988px',
+    });
   });
 });

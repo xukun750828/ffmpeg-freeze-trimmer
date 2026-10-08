@@ -38,10 +38,13 @@ export function registerMediaProtocol(): void {
     }
 
     const size = mediaStat.size;
+    const etag = `W/"${size}-${Math.trunc(mediaStat.mtimeMs)}"`;
     const headers = new Headers({
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'private, max-age=300',
       'Content-Type': 'video/mp4',
+      ETag: etag,
+      'Last-Modified': mediaStat.mtime.toUTCString(),
     });
 
     const rangeHeader = request.headers.get('range');
