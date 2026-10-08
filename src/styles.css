@@ -143,6 +143,57 @@ select { width: 100%; padding: 7px 8px; }
   font-size: 13px;
 }
 
+.manual-range-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-top: 1px solid #222630;
+  background: #10141a;
+}
+
+.manual-range-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.manual-range-actions button {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.manual-range-actions kbd {
+  display: inline-flex;
+  min-width: 18px;
+  justify-content: center;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border: 1px solid #46505f;
+  border-radius: 4px;
+  background: #202630;
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 10px;
+}
+
+.manual-range-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 12px;
+  color: #9ca6b5;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.manual-range-status strong {
+  color: #f3f4f6;
+  font-weight: 600;
+}
+
 .side-panel {
   width: 390px;
   height: 100%;
@@ -645,4 +696,10 @@ select { width: 100%; padding: 7px 8px; }
   border-color: #51604b;
   color: #b7c8ae;
   background: #192019;
+}
+
+.freeze-times .candidate-source-badge.manual {
+  border-color: #7a5f3d;
+  color: #f2c98f;
+  background: #2a2015;
 }

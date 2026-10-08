@@ -567,6 +567,77 @@ describe('selection, timeline, and export workflow', () => {
     expect(playSpy).toHaveBeenCalledOnce();
   });
 
+  it('creates a selected manual removal interval with the In/Out buttons and exports it', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 10;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(
+      screen.getByRole('button', { name: '设置人工删除区间起点' }),
+    );
+
+    expect(screen.getByText('起点：')).toBeInTheDocument();
+    expect(screen.getByText('00:10.000')).toBeInTheDocument();
+
+    video.currentTime = 15.5;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(
+      screen.getByRole('button', { name: '设置人工删除区间终点' }),
+    );
+
+    expect(screen.getByText('人工指定')).toBeInTheDocument();
+    expect(screen.getByText('00:10.000 → 00:15.500')).toBeInTheDocument();
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:05.500')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '导出视频' }));
+
+    await waitFor(() => {
+      expect(desktopApi.startExport).toHaveBeenCalledWith({
+        inputPath: 'C:\\Videos\\demo.mp4',
+        outputPath: 'C:\\Videos\\demo_trimmed.mp4',
+        durationSec: 125.5,
+        fps: 30,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
+        hasAudio: true,
+        removeRanges: [{ startSec: 10, endSec: 15.5 }],
+      });
+    });
+  });
+
+  it('supports I/O shortcuts and preserves manual ranges when direction detection reruns', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 22.25;
+    fireEvent.timeUpdate(video);
+    fireEvent.keyDown(window, { key: 'i' });
+
+    video.currentTime = 27.75;
+    fireEvent.timeUpdate(video);
+    fireEvent.keyDown(window, { key: 'o' });
+
+    expect(screen.getByText('人工指定')).toBeInTheDocument();
+    expect(screen.getByText('00:22.250 → 00:27.750')).toBeInTheDocument();
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+
+    await startDetectionAndWait();
+
+    expect(screen.getByText('已选择 1 / 3')).toBeInTheDocument();
+    expect(screen.getByText('人工指定')).toBeInTheDocument();
+    expect(screen.getAllByText('方向检测')).toHaveLength(2);
+  });
+
   it('starts an MP4 export with the selected removal ranges and supports cancellation', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;

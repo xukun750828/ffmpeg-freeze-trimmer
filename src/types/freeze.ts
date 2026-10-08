@@ -1,4 +1,4 @@
-export type FreezeIntervalSource = 'detected' | 'similarity';
+export type FreezeIntervalSource = 'detected' | 'similarity' | 'manual';
 
 export interface FreezeInterval {
   id: string;

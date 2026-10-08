@@ -36,6 +36,12 @@ function buildSimilarityIntervalId(match: ExactFrameMatch): string {
   )}`;
 }
 
+function buildManualIntervalId(startSec: number, endSec: number): string {
+  return `manual-${Math.round(startSec * 1000)}-${Math.round(
+    endSec * 1000,
+  )}`;
+}
+
 function isSameSimilarityRange(
   interval: FreezeInterval,
   match: ExactFrameMatch,
@@ -76,6 +82,9 @@ export default function App() {
     useState<ExactFrameMatch | null>(null);
   const [visualChangeLevel, setVisualChangeLevel] =
     useState<VisualChangeLevel>('standard');
+  const [manualRangeStartSec, setManualRangeStartSec] = useState<number | null>(
+    null,
+  );
 
   const [exportStatus, setExportStatus] = useState<ExportUiStatus>('idle');
   const [exportProgress, setExportProgress] = useState(0);
@@ -173,7 +182,7 @@ export default function App() {
     setError(null);
     setAnalysisStatus('detecting');
     setIntervals((current) =>
-      current.filter((interval) => interval.source === 'similarity'),
+      current.filter((interval) => interval.source !== 'detected'),
     );
     setActiveIntervalId(null);
     setPreviewEndSec(null);
@@ -189,7 +198,7 @@ export default function App() {
         options: detectionOptions,
       });
       setIntervals((current) => [
-        ...current.filter((interval) => interval.source === 'similarity'),
+        ...current.filter((interval) => interval.source !== 'detected'),
         ...detected.map((interval) => ({
           ...interval,
           source: 'detected' as const,
@@ -199,7 +208,7 @@ export default function App() {
       setAnalysisStatus('ready');
     } catch (caught) {
       setIntervals((current) =>
-        current.filter((interval) => interval.source === 'similarity'),
+        current.filter((interval) => interval.source !== 'detected'),
       );
       setAnalysisStatus('failed');
       setError(getUserFriendlyError(caught, '静止画面检测失败'));
@@ -226,6 +235,7 @@ export default function App() {
       setAnalysisStatus('idle');
       setExactMatchStatus('idle');
       setExactFrameMatch(null);
+      setManualRangeStartSec(null);
       setStatus('ready');
     } catch (caught) {
       setError(getUserFriendlyError(caught, '打开视频失败'));
@@ -376,6 +386,98 @@ export default function App() {
       setPreviewEndSec(null);
     }
   }
+
+  function getCurrentPlaybackTimeSec(): number | null {
+    if (!media) return null;
+
+    const videoTime = videoRef.current?.currentTime;
+    const value =
+      videoTime !== undefined && Number.isFinite(videoTime)
+        ? videoTime
+        : currentTimeSec;
+
+    return Math.max(0, Math.min(media.durationSec, value));
+  }
+
+  function handleSetManualRangeStart() {
+    if (!media || exportStatus === 'exporting') return;
+
+    const startSec = getCurrentPlaybackTimeSec();
+    if (startSec === null) return;
+
+    setManualRangeStartSec(startSec);
+    setError(null);
+    setActiveIntervalId(null);
+  }
+
+  function handleSetManualRangeEnd() {
+    if (!media || exportStatus === 'exporting') return;
+
+    const endSec = getCurrentPlaybackTimeSec();
+    if (endSec === null) return;
+
+    if (manualRangeStartSec === null) {
+      setError('请先设置人工删除区间起点（I）。');
+      return;
+    }
+
+    if (endSec <= manualRangeStartSec + 1e-6) {
+      setError('人工删除区间终点必须晚于起点。');
+      return;
+    }
+
+    const id = buildManualIntervalId(manualRangeStartSec, endSec);
+    const interval: FreezeInterval = {
+      id,
+      startSec: manualRangeStartSec,
+      endSec,
+      durationSec: endSec - manualRangeStartSec,
+      selectedForRemoval: true,
+      source: 'manual',
+    };
+
+    setIntervals((current) => {
+      const existingIndex = current.findIndex((item) => item.id === id);
+      if (existingIndex < 0) return [...current, interval];
+
+      return current.map((item, index) =>
+        index === existingIndex
+          ? { ...interval, selectedForRemoval: true }
+          : item,
+      );
+    });
+    setActiveIntervalId(id);
+    setManualRangeStartSec(null);
+    setError(null);
+  }
+
+  useEffect(() => {
+    if (!media || exportStatus === 'exporting') return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.matches('input, textarea, select') || target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'i') {
+        event.preventDefault();
+        handleSetManualRangeStart();
+      } else if (key === 'o') {
+        event.preventDefault();
+        handleSetManualRangeEnd();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [media, exportStatus, manualRangeStartSec]);
 
   function handleToggleRemoval(intervalId: string) {
     if (exportStatus === 'exporting') return;
@@ -572,6 +674,46 @@ export default function App() {
               <div className="player-status">
                 <span>{formatTime(currentTimeSec)} / {formatTime(media.durationSec)}</span>
                 <span>{mediaSummary}</span>
+              </div>
+
+              <div
+                className="manual-range-toolbar"
+                aria-label="人工指定删除区间"
+              >
+                <div className="manual-range-actions">
+                  <button
+                    type="button"
+                    aria-label="设置人工删除区间起点"
+                    onClick={handleSetManualRangeStart}
+                    disabled={exportStatus === 'exporting'}
+                    title="快捷键 I"
+                  >
+                    设置起点 <kbd>I</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="设置人工删除区间终点"
+                    onClick={handleSetManualRangeEnd}
+                    disabled={exportStatus === 'exporting'}
+                    title="快捷键 O"
+                  >
+                    设置终点 <kbd>O</kbd>
+                  </button>
+                </div>
+                <div className="manual-range-status" aria-live="polite">
+                  {manualRangeStartSec === null ? (
+                    <span>在播放器定位后设置起点；设置终点后自动加入待删除。</span>
+                  ) : (
+                    <>
+                      <span>
+                        起点：<strong>{formatPreciseTime(manualRangeStartSec)}</strong>
+                      </span>
+                      <span>
+                        当前：{formatPreciseTime(currentTimeSec)} · 按 O 设置终点
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
 
               <Timeline

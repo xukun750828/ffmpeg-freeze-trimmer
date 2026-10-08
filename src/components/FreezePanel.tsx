@@ -68,7 +68,7 @@ export function FreezePanel({
   const allSelected =
     intervals.length > 0 && selectedCount === intervals.length;
   const detectedCount = intervals.filter(
-    (interval) => interval.source !== 'similarity',
+    (interval) => interval.source === 'detected',
   ).length;
 
   const summary =
@@ -339,7 +339,7 @@ export function FreezePanel({
         <>
           <div className="candidate-list-heading">
             <h3>删除候选区间</h3>
-            <span>相似定位与方向检测结果统一在这里管理</span>
+            <span>人工指定、相似定位与方向检测结果统一在这里管理</span>
           </div>
           <div className="selection-toolbar">
           <label>
@@ -384,11 +384,13 @@ export function FreezePanel({
                 <span className="freeze-times">
                   <span className="candidate-source-row">
                     <span
-                      className={`candidate-source-badge ${interval.source === 'similarity' ? 'similarity' : 'detected'}`}
+                      className={`candidate-source-badge ${interval.source ?? 'detected'}`}
                     >
                       {interval.source === 'similarity'
                         ? '相似定位'
-                        : '方向检测'}
+                        : interval.source === 'manual'
+                          ? '人工指定'
+                          : '方向检测'}
                     </span>
                     <strong>
                       {formatPreciseTime(interval.startSec)} →{' '}
