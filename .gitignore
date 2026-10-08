@@ -3,5 +3,6 @@ dist/
 dist-electron/
 release/
 coverage/
+tmp/
 *.log
 .DS_Store

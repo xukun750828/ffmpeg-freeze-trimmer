@@ -465,6 +465,9 @@ export default function App() {
         inputPath: selection.path,
         outputPath,
         durationSec: media.durationSec,
+        fps: media.fps,
+        videoCodec: media.videoCodec,
+        audioCodec: media.audioCodec,
         hasAudio: media.hasAudio,
         removeRanges: mergeTimeRanges(selectedIntervals),
       });

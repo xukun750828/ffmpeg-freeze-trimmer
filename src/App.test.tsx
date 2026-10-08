@@ -537,6 +537,9 @@ describe('selection, timeline, and export workflow', () => {
         inputPath: 'C:\\Videos\\demo.mp4',
         outputPath: 'C:\\Videos\\demo_trimmed.mp4',
         durationSec: 125.5,
+        fps: 30,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
         hasAudio: true,
         removeRanges: [
           {
@@ -580,6 +583,9 @@ describe('selection, timeline, and export workflow', () => {
         inputPath: 'C:\\Videos\\demo.mp4',
         outputPath: 'C:\\Videos\\demo_trimmed.mp4',
         durationSec: 125.5,
+        fps: 30,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
         hasAudio: true,
         removeRanges: [
           {

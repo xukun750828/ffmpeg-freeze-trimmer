@@ -6,10 +6,15 @@ import { runProcess } from '../process/process-runner';
 import { buildTrimConcatFilter } from './filter-builder';
 import { buildExportArgs, parseFfmpegOutTimeSec } from './ffmpeg-export';
 import { createExportPlan } from './range-planner';
+import {
+  canUseSmartCopy,
+  writeSmartCopyConcatFile,
+} from './smart-copy';
 import type {
   ExportFinishedEvent,
   ExportProgressEvent,
   ExportRequest,
+  ExportStrategy,
 } from './types';
 
 interface ExportJob {
@@ -41,6 +46,53 @@ function createTempOutputPath(outputPath: string, jobId: string): string {
   return path.join(directory, `.${basename}.${jobId}.tmp${extension}`);
 }
 
+function createConcatPlanPath(tempOutputPath: string): string {
+  return `${tempOutputPath}.ffconcat`;
+}
+
+function buildSmartCopyArgs(
+  concatPath: string,
+  tempOutputPath: string,
+  hasAudio: boolean,
+): string[] {
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    concatPath,
+    '-map',
+    '0:v:0',
+  ];
+
+  if (hasAudio) {
+    args.push('-map', '0:a:0?');
+  }
+
+  args.push(
+    '-c',
+    'copy',
+    '-avoid_negative_ts',
+    'make_zero',
+    '-progress',
+    'pipe:1',
+    '-nostats',
+    tempOutputPath,
+  );
+
+  return args;
+}
+
+async function validateOutputFile(filePath: string): Promise<void> {
+  const outputStat = await stat(filePath);
+  if (!outputStat.isFile() || outputStat.size <= 0) {
+    throw new Error('EXPORT_EMPTY_OUTPUT');
+  }
+}
+
 export class VideoExporter {
   private activeJob: ExportJob | null = null;
 
@@ -66,7 +118,6 @@ export class VideoExporter {
       throw new Error('NO_KEEP_RANGE');
     }
 
-    const graph = buildTrimConcatFilter(plan.keepRanges, request.hasAudio);
     const jobId = randomUUID();
     const abortController = new AbortController();
     const job: ExportJob = { id: jobId, abortController };
@@ -79,7 +130,8 @@ export class VideoExporter {
       request,
       tempOutputPath,
       plan.outputDurationSec,
-      graph,
+      plan.keepRanges,
+      plan.removeRanges,
       onProgress,
       onFinished,
     );
@@ -95,45 +147,182 @@ export class VideoExporter {
     this.activeJob.abortController.abort();
   }
 
+  private emitProgress(
+    job: ExportJob,
+    outTimeSec: number,
+    expectedDurationSec: number,
+    strategy: ExportStrategy,
+    onProgress: ProgressListener,
+  ): void {
+    onProgress({
+      jobId: job.id,
+      outTimeSec,
+      progress: Math.min(
+        1,
+        Math.max(0, outTimeSec / expectedDurationSec),
+      ),
+      strategy,
+    });
+  }
+
+  private async runFfmpeg(
+    job: ExportJob,
+    args: string[],
+    expectedDurationSec: number,
+    strategy: ExportStrategy,
+    onProgress: ProgressListener,
+  ) {
+    return runProcess(resolveFfmpegPath(), args, {
+      signal: job.abortController.signal,
+      onStdoutLine: (line) => {
+        const outTimeSec = parseFfmpegOutTimeSec(line);
+        if (outTimeSec === null) return;
+
+        this.emitProgress(
+          job,
+          outTimeSec,
+          expectedDurationSec,
+          strategy,
+          onProgress,
+        );
+      },
+    });
+  }
+
+  private async trySmartCopy(
+    job: ExportJob,
+    request: ExportRequest,
+    tempOutputPath: string,
+    expectedDurationSec: number,
+    keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
+    removeRanges: ReturnType<typeof createExportPlan>['removeRanges'],
+    onProgress: ProgressListener,
+  ): Promise<boolean> {
+    if (request.videoCodec.toLowerCase() !== 'h264') {
+      return false;
+    }
+
+    let eligible = false;
+
+    try {
+      eligible = await canUseSmartCopy(
+        request.inputPath,
+        removeRanges,
+        request.durationSec,
+        request.fps,
+        job.abortController.signal,
+      );
+    } catch (error) {
+      if (
+        job.abortController.signal.aborted ||
+        (error instanceof Error && error.message === 'PROCESS_ABORTED')
+      ) {
+        throw error;
+      }
+      return false;
+    }
+
+    if (!eligible) return false;
+
+    const concatPath = createConcatPlanPath(tempOutputPath);
+
+    try {
+      await writeSmartCopyConcatFile(
+        concatPath,
+        request.inputPath,
+        keepRanges,
+      );
+
+      const result = await this.runFfmpeg(
+        job,
+        buildSmartCopyArgs(
+          concatPath,
+          tempOutputPath,
+          request.hasAudio,
+        ),
+        expectedDurationSec,
+        'smart-copy',
+        onProgress,
+      );
+
+      if (result.exitCode !== 0) {
+        await rm(tempOutputPath, { force: true }).catch(() => undefined);
+        return false;
+      }
+
+      await validateOutputFile(tempOutputPath);
+      return true;
+    } finally {
+      await rm(concatPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async runPreciseReencode(
+    job: ExportJob,
+    request: ExportRequest,
+    tempOutputPath: string,
+    expectedDurationSec: number,
+    keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
+    onProgress: ProgressListener,
+  ): Promise<void> {
+    const graph = buildTrimConcatFilter(keepRanges, request.hasAudio);
+    const args = buildExportArgs(
+      request.inputPath,
+      tempOutputPath,
+      graph,
+      request.hasAudio,
+    );
+
+    const result = await this.runFfmpeg(
+      job,
+      args,
+      expectedDurationSec,
+      'reencode',
+      onProgress,
+    );
+
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || 'EXPORT_FAILED');
+    }
+
+    await validateOutputFile(tempOutputPath);
+  }
+
   private async execute(
     job: ExportJob,
     request: ExportRequest,
     tempOutputPath: string,
     expectedDurationSec: number,
-    graph: ReturnType<typeof buildTrimConcatFilter>,
+    keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
+    removeRanges: ReturnType<typeof createExportPlan>['removeRanges'],
     onProgress: ProgressListener,
     onFinished: FinishedListener,
   ): Promise<void> {
+    let strategy: ExportStrategy = 'reencode';
+
     try {
-      const executable = resolveFfmpegPath();
-      const args = buildExportArgs(
-        request.inputPath,
+      const smartCopySucceeded = await this.trySmartCopy(
+        job,
+        request,
         tempOutputPath,
-        graph,
-        request.hasAudio,
+        expectedDurationSec,
+        keepRanges,
+        removeRanges,
+        onProgress,
       );
 
-      const result = await runProcess(executable, args, {
-        signal: job.abortController.signal,
-        onStdoutLine: (line) => {
-          const outTimeSec = parseFfmpegOutTimeSec(line);
-          if (outTimeSec === null) return;
-
-          onProgress({
-            jobId: job.id,
-            outTimeSec,
-            progress: Math.min(1, Math.max(0, outTimeSec / expectedDurationSec)),
-          });
-        },
-      });
-
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr.trim() || 'EXPORT_FAILED');
-      }
-
-      const outputStat = await stat(tempOutputPath);
-      if (!outputStat.isFile() || outputStat.size <= 0) {
-        throw new Error('EXPORT_EMPTY_OUTPUT');
+      if (smartCopySucceeded) {
+        strategy = 'smart-copy';
+      } else {
+        await rm(tempOutputPath, { force: true }).catch(() => undefined);
+        await this.runPreciseReencode(
+          job,
+          request,
+          tempOutputPath,
+          expectedDurationSec,
+          keepRanges,
+          onProgress,
+        );
       }
 
       if (await pathExists(request.outputPath)) {
@@ -142,19 +331,25 @@ export class VideoExporter {
 
       await rename(tempOutputPath, request.outputPath);
 
-      onProgress({
-        jobId: job.id,
-        outTimeSec: expectedDurationSec,
-        progress: 1,
-      });
+      this.emitProgress(
+        job,
+        expectedDurationSec,
+        expectedDurationSec,
+        strategy,
+        onProgress,
+      );
 
       onFinished({
         jobId: job.id,
         status: 'completed',
         outputPath: request.outputPath,
+        strategy,
       });
     } catch (error) {
       await rm(tempOutputPath, { force: true }).catch(() => undefined);
+      await rm(createConcatPlanPath(tempOutputPath), { force: true }).catch(
+        () => undefined,
+      );
 
       const cancelled =
         job.abortController.signal.aborted ||
@@ -163,6 +358,7 @@ export class VideoExporter {
       onFinished({
         jobId: job.id,
         status: cancelled ? 'cancelled' : 'failed',
+        strategy,
         error: cancelled
           ? undefined
           : error instanceof Error
