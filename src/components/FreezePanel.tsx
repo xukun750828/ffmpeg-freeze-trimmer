@@ -2,6 +2,8 @@ import type {
   AnalysisStatus,
   DetectionDirection,
   DetectionOptions,
+  ExactFrameMatch,
+  ExactMatchStatus,
   FreezeInterval,
 } from '../types/freeze';
 import { formatPreciseTime } from '../utils/time';
@@ -14,12 +16,16 @@ interface FreezePanelProps {
   currentTimeSec: number;
   direction: DetectionDirection;
   maxIntervals: number;
+  exactMatchStatus: ExactMatchStatus;
+  exactFrameMatch: ExactFrameMatch | null;
   disabled: boolean;
   selectionDisabled: boolean;
   onOptionsChange: (options: DetectionOptions) => void;
   onDirectionChange: (direction: DetectionDirection) => void;
   onMaxIntervalsChange: (count: number) => void;
   onStartDetection: () => void;
+  onLocateExactFrameMatch: () => void;
+  onPreviewRange: (startSec: number, endSec: number) => void;
   onPreview: (interval: FreezeInterval) => void;
   onToggleRemoval: (intervalId: string) => void;
   onSelectAll: (selected: boolean) => void;
@@ -33,18 +39,23 @@ export function FreezePanel({
   currentTimeSec,
   direction,
   maxIntervals,
+  exactMatchStatus,
+  exactFrameMatch,
   disabled,
   selectionDisabled,
   onOptionsChange,
   onDirectionChange,
   onMaxIntervalsChange,
   onStartDetection,
+  onLocateExactFrameMatch,
+  onPreviewRange,
   onPreview,
   onToggleRemoval,
   onSelectAll,
 }: FreezePanelProps) {
   const selectedCount = intervals.filter((interval) => interval.selectedForRemoval).length;
   const allSelected = intervals.length > 0 && selectedCount === intervals.length;
+
   const summary =
     status === 'detecting'
       ? '正在从当前时间点检测…'
@@ -56,17 +67,113 @@ export function FreezePanel({
           ? '检测失败'
           : '设置参数后点击“启动检测”';
 
+  const exactSummary =
+    exactMatchStatus === 'locating'
+      ? '正在向当前时间点左右两侧精确定位…'
+      : exactMatchStatus === 'ready'
+        ? exactFrameMatch
+          ? `完全一致画面持续 ${exactFrameMatch.durationSec.toFixed(3)} 秒`
+          : '当前帧左右没有连续的完全一致画面'
+        : exactMatchStatus === 'failed'
+          ? '精确定位失败'
+          : '以当前帧为锚点，定位左右两侧解码后像素完全一致的连续区间';
+
   return (
     <section className="freeze-panel" aria-label="静止区间">
+      <section className="exact-match-panel" aria-label="当前画面精确定位">
+        <div className="panel-heading-row">
+          <div>
+            <h2>当前画面精确定位</h2>
+            <p className="panel-summary">{exactSummary}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onLocateExactFrameMatch}
+            disabled={
+              disabled ||
+              exactMatchStatus === 'locating' ||
+              status === 'detecting'
+            }
+          >
+            {exactMatchStatus === 'locating' ? '定位中…' : '定位当前画面'}
+          </button>
+        </div>
+
+        <p className="detection-note exact-anchor-note">
+          当前锚点：{formatPreciseTime(currentTimeSec)}。该功能使用严格像素一致判定，不使用“允许画面变化”阈值。
+        </p>
+
+        {exactFrameMatch && (
+          <div className="exact-match-result">
+            <button
+              type="button"
+              className="exact-parent-range"
+              aria-label="预览当前画面完全一致区间"
+              onClick={() =>
+                onPreviewRange(
+                  exactFrameMatch.startSec,
+                  exactFrameMatch.endSec,
+                )
+              }
+            >
+              <span>
+                <strong>父区间 · 画面完全一致</strong>
+                <small>
+                  {formatPreciseTime(exactFrameMatch.startSec)} →{' '}
+                  {formatPreciseTime(exactFrameMatch.endSec)}
+                </small>
+              </span>
+              <span>{exactFrameMatch.durationSec.toFixed(3)} 秒</span>
+            </button>
+
+            <p className="audio-classification-note">
+              音频子区间按音频能量区分“有 / 无背景声音”，不区分对白、音乐或环境声来源。
+            </p>
+            <div className="audio-subintervals">
+              {exactFrameMatch.audioSubIntervals.map((segment, index) => (
+                <button
+                  type="button"
+                  className={`audio-subinterval ${segment.audioPresence}`}
+                  key={segment.id}
+                  aria-label={`预览音频子区间 ${index + 1}`}
+                  onClick={() =>
+                    onPreviewRange(segment.startSec, segment.endSec)
+                  }
+                >
+                  <span
+                    className={`audio-badge ${segment.audioPresence}`}
+                  >
+                    {segment.audioPresence === 'silence'
+                      ? '无背景声音'
+                      : '有背景声音'}
+                  </span>
+                  <span className="audio-subinterval-times">
+                    {formatPreciseTime(segment.startSec)} →{' '}
+                    {formatPreciseTime(segment.endSec)}
+                  </span>
+                  <span>{segment.durationSec.toFixed(3)} 秒</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <div className="freeze-section-divider" />
+
       <div className="panel-heading-row">
         <div>
-          <h2>静止区间</h2>
+          <h2>方向查找静止区间</h2>
           <p className="panel-summary">{summary}</p>
         </div>
         <button
           type="button"
           onClick={onStartDetection}
-          disabled={disabled || status === 'detecting'}
+          disabled={
+            disabled ||
+            status === 'detecting' ||
+            exactMatchStatus === 'locating'
+          }
         >
           {status === 'detecting' ? '检测中…' : '启动检测'}
         </button>
@@ -215,7 +322,8 @@ export function FreezePanel({
               >
                 <span className="freeze-times">
                   <strong>
-                    {formatPreciseTime(interval.startSec)} → {formatPreciseTime(interval.endSec)}
+                    {formatPreciseTime(interval.startSec)} →{' '}
+                    {formatPreciseTime(interval.endSec)}
                   </strong>
                   <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
                 </span>

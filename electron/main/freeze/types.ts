@@ -23,3 +23,28 @@ export interface DirectedDetectionRequest {
   hasAudio: boolean;
   options: DetectionOptions;
 }
+
+export type AudioPresence = 'sound' | 'silence';
+
+export interface AudioSubInterval {
+  id: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  audioPresence: AudioPresence;
+}
+
+export interface ExactFrameMatchRequest {
+  path: string;
+  durationSec: number;
+  currentTimeSec: number;
+  hasAudio: boolean;
+}
+
+export interface ExactFrameMatch {
+  anchorSec: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  audioSubIntervals: AudioSubInterval[];
+}

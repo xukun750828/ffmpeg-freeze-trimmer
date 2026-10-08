@@ -4,7 +4,12 @@ import type {
   ExportProgressEvent,
   ExportRequest,
 } from '../main/export/types';
-import type { DirectedDetectionRequest, FreezeInterval } from '../main/freeze/types';
+import type {
+  DirectedDetectionRequest,
+  ExactFrameMatch,
+  ExactFrameMatchRequest,
+  FreezeInterval,
+} from '../main/freeze/types';
 import type { MediaInfo, OpenVideoResult } from '../main/media/types';
 
 export interface DesktopApi {
@@ -12,6 +17,9 @@ export interface DesktopApi {
   openVideo(): Promise<OpenVideoResult | null>;
   probeMedia(path: string): Promise<MediaInfo>;
   detectFreezes(request: DirectedDetectionRequest): Promise<FreezeInterval[]>;
+  locateExactFrameMatch(
+    request: ExactFrameMatchRequest,
+  ): Promise<ExactFrameMatch | null>;
   chooseOutputPath(defaultName: string): Promise<string | null>;
   startExport(request: ExportRequest): Promise<{ jobId: string }>;
   cancelExport(jobId: string): Promise<void>;
@@ -26,6 +34,8 @@ const desktopApi: DesktopApi = {
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
   detectFreezes: (request) =>
     ipcRenderer.invoke('freeze:detect', request),
+  locateExactFrameMatch: (request) =>
+    ipcRenderer.invoke('freeze:locate-exact', request),
   chooseOutputPath: (defaultName) =>
     ipcRenderer.invoke('export:choose-output', defaultName),
   startExport: (request) => ipcRenderer.invoke('export:start', request),

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 
@@ -51,6 +51,35 @@ function createDesktopApi() {
         selectedForRemoval: false,
       },
     ]),
+    locateExactFrameMatch: vi.fn().mockResolvedValue({
+      anchorSec: 42.5,
+      startSec: 40,
+      endSec: 48,
+      durationSec: 8,
+      audioSubIntervals: [
+        {
+          id: 'audio-0001',
+          startSec: 40,
+          endSec: 43,
+          durationSec: 3,
+          audioPresence: 'sound',
+        },
+        {
+          id: 'audio-0002',
+          startSec: 43,
+          endSec: 46.5,
+          durationSec: 3.5,
+          audioPresence: 'silence',
+        },
+        {
+          id: 'audio-0003',
+          startSec: 46.5,
+          endSec: 48,
+          durationSec: 1.5,
+          audioPresence: 'sound',
+        },
+      ],
+    }),
     chooseOutputPath: vi
       .fn()
       .mockResolvedValue('C:\\Videos\\demo_trimmed.mp4'),
@@ -120,6 +149,47 @@ describe('App media import and manual directed freeze detection', () => {
         hasBackgroundSound: true,
       },
     });
+  });
+
+  it('locates an exact current-frame parent interval with sound and silence child intervals', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 42.5;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('完全一致画面持续 8.000 秒'),
+      ).toBeInTheDocument();
+    });
+
+    expect(desktopApi.locateExactFrameMatch).toHaveBeenCalledWith({
+      path: 'C:\\Videos\\demo.mp4',
+      durationSec: 125.5,
+      currentTimeSec: 42.5,
+      hasAudio: true,
+    });
+
+    const exactPanel = screen.getByLabelText('当前画面精确定位');
+    expect(within(exactPanel).getAllByText('有背景声音')).toHaveLength(2);
+    expect(within(exactPanel).getByText('无背景声音')).toBeInTheDocument();
+    expect(screen.getByText('00:40.000 → 00:48.000')).toBeInTheDocument();
+
+    pauseSpy.mockClear();
+    playSpy.mockClear();
+    fireEvent.click(
+      screen.getByRole('button', { name: '预览音频子区间 2' }),
+    );
+
+    expect(video.currentTime).toBeCloseTo(42.5, 3);
+    expect(playSpy).toHaveBeenCalledOnce();
   });
 
   it('uses edited visual, audio, direction, and interval-count settings', async () => {

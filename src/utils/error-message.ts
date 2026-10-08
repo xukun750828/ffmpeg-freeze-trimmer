@@ -9,6 +9,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_DETECTION_OPTIONS: '静止检测参数无效。',
   INVALID_MEDIA_DURATION: '视频时长无效。',
   INVALID_DETECTION_RANGE: '检测起点、方向或数量无效。',
+  EXACT_FRAME_SCAN_FAILED: '当前画面精确定位失败。',
+  SILENCE_DETECTION_FAILED: '音频有声/无声区间分析失败。',
   INVALID_RANGE: '检测到无效的时间区间。',
   NO_KEEP_RANGE: '当前选择会删除整个视频，请至少保留一段内容。',
   OUTPUT_CANNOT_OVERWRITE_SOURCE: '导出路径不能与源视频相同。',

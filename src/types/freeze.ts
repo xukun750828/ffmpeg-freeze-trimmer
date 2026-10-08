@@ -24,4 +24,30 @@ export interface DirectedDetectionRequest {
   options: DetectionOptions;
 }
 
+export type AudioPresence = 'sound' | 'silence';
+
+export interface AudioSubInterval {
+  id: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  audioPresence: AudioPresence;
+}
+
+export interface ExactFrameMatchRequest {
+  path: string;
+  durationSec: number;
+  currentTimeSec: number;
+  hasAudio: boolean;
+}
+
+export interface ExactFrameMatch {
+  anchorSec: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  audioSubIntervals: AudioSubInterval[];
+}
+
 export type AnalysisStatus = 'idle' | 'detecting' | 'ready' | 'failed';
+export type ExactMatchStatus = 'idle' | 'locating' | 'ready' | 'failed';

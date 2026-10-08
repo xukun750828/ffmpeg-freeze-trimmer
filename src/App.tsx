@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
 import { Timeline } from './components/Timeline';
-import type { AnalysisStatus, DetectionDirection, DetectionOptions, FreezeInterval } from './types/freeze';
+import type {
+  AnalysisStatus,
+  DetectionDirection,
+  DetectionOptions,
+  ExactFrameMatch,
+  ExactMatchStatus,
+  FreezeInterval,
+} from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
 import { getUserFriendlyError } from './utils/error-message';
 import { formatPreciseTime, formatTime } from './utils/time';
@@ -36,6 +43,10 @@ export default function App() {
   const [detectionDirection, setDetectionDirection] =
     useState<DetectionDirection>('forward');
   const [maxDetectionIntervals, setMaxDetectionIntervals] = useState(5);
+  const [exactMatchStatus, setExactMatchStatus] =
+    useState<ExactMatchStatus>('idle');
+  const [exactFrameMatch, setExactFrameMatch] =
+    useState<ExactFrameMatch | null>(null);
 
   const [exportStatus, setExportStatus] = useState<ExportUiStatus>('idle');
   const [exportProgress, setExportProgress] = useState(0);
@@ -166,6 +177,8 @@ export default function App() {
       setExportStatus('idle');
       setExportProgress(0);
       setAnalysisStatus('idle');
+      setExactMatchStatus('idle');
+      setExactFrameMatch(null);
       setStatus('ready');
     } catch (caught) {
       setError(getUserFriendlyError(caught, '打开视频失败'));
@@ -198,15 +211,59 @@ export default function App() {
     await runDetection();
   }
 
-  function handlePreview(interval: FreezeInterval) {
+  async function handleLocateExactFrameMatch() {
+    if (
+      !window.desktopApi ||
+      !selection ||
+      !media ||
+      exportStatus === 'exporting' ||
+      exactMatchStatus === 'locating'
+    ) {
+      return;
+    }
+
+    const video = videoRef.current;
+    const anchorSec = Math.max(
+      0,
+      Math.min(media.durationSec, video?.currentTime ?? currentTimeSec),
+    );
+
+    video?.pause();
+    setCurrentTimeSec(anchorSec);
+    setError(null);
+    setExactFrameMatch(null);
+    setExactMatchStatus('locating');
+
+    try {
+      const match = await window.desktopApi.locateExactFrameMatch({
+        path: selection.path,
+        durationSec: media.durationSec,
+        currentTimeSec: anchorSec,
+        hasAudio: media.hasAudio,
+      });
+
+      setExactFrameMatch(match);
+      setExactMatchStatus('ready');
+    } catch (caught) {
+      setExactFrameMatch(null);
+      setExactMatchStatus('failed');
+      setError(getUserFriendlyError(caught, '当前画面精确定位失败'));
+    }
+  }
+
+  function handlePreviewRange(
+    startSec: number,
+    endSec: number,
+    activeId: string | null = null,
+  ) {
     const video = videoRef.current;
     if (!video || !media) return;
 
-    const previewStart = Math.max(0, interval.startSec - PREVIEW_LEAD_SEC);
-    const previewEnd = Math.min(media.durationSec, interval.endSec + PREVIEW_TAIL_SEC);
+    const previewStart = Math.max(0, startSec - PREVIEW_LEAD_SEC);
+    const previewEnd = Math.min(media.durationSec, endSec + PREVIEW_TAIL_SEC);
 
     setError(null);
-    setActiveIntervalId(interval.id);
+    setActiveIntervalId(activeId);
     setPreviewEndSec(previewEnd);
     setCurrentTimeSec(previewStart);
 
@@ -239,6 +296,10 @@ export default function App() {
     tryPlay();
   }
 
+  function handlePreview(interval: FreezeInterval) {
+    handlePreviewRange(interval.startSec, interval.endSec, interval.id);
+  }
+
   function handleVideoSeeking() {
     if (previewSeekInProgressRef.current) {
       return;
@@ -246,6 +307,8 @@ export default function App() {
 
     setPreviewEndSec(null);
     setActiveIntervalId(null);
+    setExactFrameMatch(null);
+    setExactMatchStatus('idle');
     setError((current) =>
       current === '无法开始播放当前预览区间。' ? null : current,
     );
@@ -460,12 +523,18 @@ export default function App() {
             currentTimeSec={currentTimeSec}
             direction={detectionDirection}
             maxIntervals={maxDetectionIntervals}
+            exactMatchStatus={exactMatchStatus}
+            exactFrameMatch={exactFrameMatch}
             disabled={!media || exportStatus === 'exporting'}
             selectionDisabled={exportStatus === 'exporting'}
             onOptionsChange={setDetectionOptions}
             onDirectionChange={setDetectionDirection}
             onMaxIntervalsChange={setMaxDetectionIntervals}
             onStartDetection={handleStartDetection}
+            onLocateExactFrameMatch={handleLocateExactFrameMatch}
+            onPreviewRange={(startSec, endSec) =>
+              handlePreviewRange(startSec, endSec)
+            }
             onPreview={handlePreview}
             onToggleRemoval={handleToggleRemoval}
             onSelectAll={handleSelectAll}

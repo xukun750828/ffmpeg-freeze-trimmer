@@ -11,6 +11,7 @@ import {
   detectFreezes,
   detectFreezesDirected,
 } from '../../electron/main/freeze/freeze-detector';
+import { locateExactFrameMatch } from '../../electron/main/freeze/exact-frame-locator';
 import { probeMedia } from '../../electron/main/media/media-probe';
 import { runProcess } from '../../electron/main/process/process-runner';
 
@@ -109,6 +110,63 @@ async function createNearbyFreezeInput(outputPath: string): Promise<void> {
   }
 }
 
+async function createExactMatchAudioFixture(outputPath: string): Promise<void> {
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=blue:size=320x240:rate=30:duration=6',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30:duration=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:sample_rate=48000:duration=4',
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=r=48000:cl=mono:d=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=660:sample_rate=48000:duration=4',
+    '-filter_complex',
+    '[0:v][1:v][2:v]concat=n=3:v=1:a=0[v];[3:a][4:a][5:a]concat=n=3:v=0:a=1[a]',
+    '-map',
+    '[v]',
+    '-map',
+    '[a]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-qp',
+    '0',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '128k',
+    outputPath,
+  ];
+
+  const result = await runProcess(process.env.FFMPEG_PATH || 'ffmpeg', args);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || 'EXACT_MATCH_FIXTURE_GENERATION_FAILED');
+  }
+}
+
 async function createSyntheticInput(outputPath: string, withAudio: boolean): Promise<void> {
   const args = [
     '-y',
@@ -175,6 +233,44 @@ afterEach(async () => {
 });
 
 describe('real FFmpeg pipeline', () => {
+  it(
+    'locates the exact current-frame parent interval and splits audio child intervals',
+    async () => {
+      const inputPath = path.join(tempDir, 'exact-match-audio.mp4');
+      await createExactMatchAudioFixture(inputPath);
+      const source = await probeMedia(inputPath);
+
+      const match = await locateExactFrameMatch({
+        path: inputPath,
+        durationSec: source.durationSec,
+        currentTimeSec: 5,
+        hasAudio: true,
+      });
+
+      expect(match).not.toBeNull();
+      expect(match!.startSec).toBeGreaterThanOrEqual(1.8);
+      expect(match!.startSec).toBeLessThan(2.2);
+      expect(match!.endSec).toBeGreaterThan(7.8);
+      expect(match!.endSec).toBeLessThan(8.2);
+
+      const silence = match!.audioSubIntervals.find(
+        (segment) => segment.audioPresence === 'silence',
+      );
+      expect(silence).toBeDefined();
+      expect(silence!.startSec).toBeGreaterThanOrEqual(3.8);
+      expect(silence!.startSec).toBeLessThan(4.3);
+      expect(silence!.endSec).toBeGreaterThan(5.7);
+      expect(silence!.endSec).toBeLessThan(6.3);
+
+      expect(
+        match!.audioSubIntervals.filter(
+          (segment) => segment.audioPresence === 'sound',
+        ).length,
+      ).toBeGreaterThanOrEqual(2);
+    },
+    30_000,
+  );
+
   it(
     'finds the nearest freeze before or after the current time on demand',
     async () => {

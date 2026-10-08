@@ -4,7 +4,12 @@ import { installApplicationMenu } from './app-menu';
 import { VideoExporter } from './export/video-exporter';
 import type { ExportRequest } from './export/types';
 import { detectFreezesDirected } from './freeze/freeze-detector';
-import type { DetectionOptions, DirectedDetectionRequest } from './freeze/types';
+import { locateExactFrameMatch } from './freeze/exact-frame-locator';
+import type {
+  DetectionOptions,
+  DirectedDetectionRequest,
+  ExactFrameMatchRequest,
+} from './freeze/types';
 import { openVideoDialog } from './media/media-importer';
 import { probeMedia } from './media/media-probe';
 import { clearMediaRegistry, registerMediaProtocol } from './media/media-protocol';
@@ -93,6 +98,26 @@ app.whenReady().then(() => {
       }
 
       return detectFreezesDirected(request);
+    },
+  );
+
+  ipcMain.handle(
+    'freeze:locate-exact',
+    (_event, request: ExactFrameMatchRequest) => {
+      if (!Number.isFinite(request.durationSec) || request.durationSec <= 0) {
+        throw new Error('INVALID_MEDIA_DURATION');
+      }
+
+      if (
+        !Number.isFinite(request.currentTimeSec) ||
+        request.currentTimeSec < 0 ||
+        request.currentTimeSec > request.durationSec ||
+        typeof request.hasAudio !== 'boolean'
+      ) {
+        throw new Error('INVALID_DETECTION_RANGE');
+      }
+
+      return locateExactFrameMatch(request);
     },
   );
 
