@@ -486,6 +486,7 @@ export default function App() {
                 currentTimeSec={currentTimeSec}
                 intervals={intervals}
                 activeIntervalId={activeIntervalId}
+                previewSourceUrl={selection.sourceUrl}
                 onPreview={handlePreview}
               />
 
