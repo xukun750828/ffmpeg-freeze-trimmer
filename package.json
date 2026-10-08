@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-freeze-trimmer",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "Desktop MP4 freeze-frame review and trimming tool powered by FFmpeg",
   "author": "xukun750828",

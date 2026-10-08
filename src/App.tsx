@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
+import { NativeTimelineHoverPreview } from './components/NativeTimelineHoverPreview';
 import { Timeline } from './components/Timeline';
 import type {
   AnalysisStatus,
@@ -461,21 +462,30 @@ export default function App() {
         <div className="player-panel">
           {selection && media ? (
             <>
-              <video
-                ref={videoRef}
-                className="video-player"
-                src={selection.sourceUrl}
-                controls
-                onTimeUpdate={handleVideoTimeUpdate}
-                onSeeking={handleVideoSeeking}
-                onSeeked={handleVideoSeeked}
-                onLoadedMetadata={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
-                onPlay={() =>
-                  setError((current) =>
-                    current === '无法开始播放当前预览区间。' ? null : current,
-                  )
-                }
-              />
+              <NativeTimelineHoverPreview
+                durationSec={media.durationSec}
+                previewSourceUrl={selection.sourceUrl}
+              >
+                <video
+                  ref={videoRef}
+                  className="video-player"
+                  src={selection.sourceUrl}
+                  controls
+                  onTimeUpdate={handleVideoTimeUpdate}
+                  onSeeking={handleVideoSeeking}
+                  onSeeked={handleVideoSeeked}
+                  onLoadedMetadata={(event) =>
+                    setCurrentTimeSec(event.currentTarget.currentTime)
+                  }
+                  onPlay={() =>
+                    setError((current) =>
+                      current === '无法开始播放当前预览区间。'
+                        ? null
+                        : current,
+                    )
+                  }
+                />
+              </NativeTimelineHoverPreview>
               <div className="player-status">
                 <span>{formatTime(currentTimeSec)} / {formatTime(media.durationSec)}</span>
                 <span>{mediaSummary}</span>
