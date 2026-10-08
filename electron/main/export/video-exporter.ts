@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { access, rename, rm, stat } from 'node:fs/promises';
+import { access, mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { resolveFfmpegPath } from '../ffmpeg-paths';
+import { resolveFfmpegPath, resolveFfprobePath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import { buildTrimConcatFilter } from './filter-builder';
 import { buildExportArgs, parseFfmpegOutTimeSec } from './ffmpeg-export';
@@ -10,6 +10,24 @@ import {
   canUseSmartCopy,
   writeSmartCopyConcatFile,
 } from './smart-copy';
+import {
+  buildSmartRenderAudioConcatArgs,
+  buildSmartRenderAudioSegmentArgs,
+  buildSmartRenderMuxArgs,
+  SMART_RENDER_AUDIO_CONCURRENCY,
+  splitAudioKeepRanges,
+  writeSmartRenderAudioConcatFile,
+  type SmartRenderAudioSegment,
+} from './smart-render-audio';
+import {
+  buildSmartRenderConcatArgs,
+  buildSmartRenderEncodeArgs,
+  getFrameAlignedCopyDurationSec,
+  planSmartRenderRanges,
+  probeSmartRenderCodecParams,
+  writeSmartRenderConcatFile,
+  type SmartRenderConcatEntry,
+} from './smart-render';
 import type {
   ExportFinishedEvent,
   ExportProgressEvent,
@@ -50,6 +68,10 @@ function createConcatPlanPath(tempOutputPath: string): string {
   return `${tempOutputPath}.ffconcat`;
 }
 
+function createSmartRenderWorkspace(tempOutputPath: string): string {
+  return `${tempOutputPath}.smart-render`;
+}
+
 function buildSmartCopyArgs(
   concatPath: string,
   tempOutputPath: string,
@@ -86,11 +108,72 @@ function buildSmartCopyArgs(
   return args;
 }
 
+function hasUnsafeTimestampWarnings(stderr: string): boolean {
+  if (/dts .* out of order|packet corrupt/i.test(stderr)) return true;
+
+  const warningRe =
+    /non-monotonic dts[^;]*; previous:\s*(-?\d+), current:\s*(-?\d+); changing to\s*(-?\d+)/gi;
+  let matched = false;
+  let match: RegExpExecArray | null;
+
+  while ((match = warningRe.exec(stderr)) !== null) {
+    matched = true;
+    const previous = Number(match[1]);
+    const current = Number(match[2]);
+    const changed = Number(match[3]);
+    if (current !== previous || changed !== previous + 1) return true;
+  }
+
+  return /non-monotonic dts/i.test(stderr) && !matched;
+}
+
 async function validateOutputFile(filePath: string): Promise<void> {
   const outputStat = await stat(filePath);
   if (!outputStat.isFile() || outputStat.size <= 0) {
     throw new Error('EXPORT_EMPTY_OUTPUT');
   }
+}
+
+async function probeOutputDurationSec(
+  filePath: string,
+  signal: AbortSignal,
+): Promise<number | null> {
+  const result = await runProcess(
+    resolveFfprobePath(),
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ],
+    { signal },
+  );
+
+  if (result.exitCode !== 0) return null;
+  const value = Number(result.stdout.trim());
+  return Number.isFinite(value) ? value : null;
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await worker(items[index], index);
+      }
+    }),
+  );
 }
 
 export class VideoExporter {
@@ -153,14 +236,18 @@ export class VideoExporter {
     expectedDurationSec: number,
     strategy: ExportStrategy,
     onProgress: ProgressListener,
+    progressWindow: [number, number] = [0, 1],
   ): void {
+    const rawProgress = Math.min(
+      1,
+      Math.max(0, outTimeSec / expectedDurationSec),
+    );
+    const [start, end] = progressWindow;
+
     onProgress({
       jobId: job.id,
       outTimeSec,
-      progress: Math.min(
-        1,
-        Math.max(0, outTimeSec / expectedDurationSec),
-      ),
+      progress: start + (end - start) * rawProgress,
       strategy,
     });
   }
@@ -171,6 +258,7 @@ export class VideoExporter {
     expectedDurationSec: number,
     strategy: ExportStrategy,
     onProgress: ProgressListener,
+    progressWindow: [number, number] = [0, 1],
   ) {
     return runProcess(resolveFfmpegPath(), args, {
       signal: job.abortController.signal,
@@ -184,6 +272,7 @@ export class VideoExporter {
           expectedDurationSec,
           strategy,
           onProgress,
+          progressWindow,
         );
       },
     });
@@ -245,7 +334,10 @@ export class VideoExporter {
         onProgress,
       );
 
-      if (result.exitCode !== 0) {
+      if (
+        result.exitCode !== 0 ||
+        hasUnsafeTimestampWarnings(result.stderr)
+      ) {
         await rm(tempOutputPath, { force: true }).catch(() => undefined);
         return false;
       }
@@ -254,6 +346,269 @@ export class VideoExporter {
       return true;
     } finally {
       await rm(concatPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async trySmartRender(
+    job: ExportJob,
+    request: ExportRequest,
+    tempOutputPath: string,
+    expectedDurationSec: number,
+    keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
+    onProgress: ProgressListener,
+  ): Promise<boolean> {
+    if (request.videoCodec.toLowerCase() !== 'h264') {
+      return false;
+    }
+
+    const workspace = createSmartRenderWorkspace(tempOutputPath);
+    const concatPath = path.join(workspace, 'smart-render.ffconcat');
+    const videoPath = path.join(workspace, 'video.mp4');
+    const audioPath = path.join(workspace, 'audio.m4a');
+
+    try {
+      await mkdir(workspace, { recursive: true });
+
+      const params = await probeSmartRenderCodecParams(
+        request.inputPath,
+        job.abortController.signal,
+      );
+      if (!params) return false;
+      if (params.hasBFrames > 0) return false;
+
+      const plans = await planSmartRenderRanges(
+        request.inputPath,
+        keepRanges,
+        params,
+        job.abortController.signal,
+      );
+      const entries: SmartRenderConcatEntry[] = [];
+
+      for (const [index, plan] of plans.entries()) {
+        if (plan.mode === 'copy') {
+          entries.push({
+            kind: 'source',
+            path: request.inputPath,
+            startSec: plan.range.startSec,
+            endSec: plan.range.endSec,
+            durationSec: getFrameAlignedCopyDurationSec(
+              plan.range.startSec,
+              plan.range.endSec,
+              params.nominalFps,
+            ),
+          });
+          continue;
+        }
+
+        const encodedPath = path.join(
+          workspace,
+          `${String(index).padStart(4, '0')}-encoded.mp4`,
+        );
+        const encodeEndSec =
+          plan.mode === 'hybrid'
+            ? plan.encodeEndSec
+            : plan.range.endSec;
+        const encodeFrameCount = plan.encodeFrameCount;
+        if (encodeFrameCount <= 0) return false;
+
+        const encodeResult = await runProcess(
+          resolveFfmpegPath(),
+          buildSmartRenderEncodeArgs(
+            request.inputPath,
+            encodedPath,
+            plan.range.startSec,
+            encodeEndSec,
+            params,
+            false,
+            encodeFrameCount,
+          ),
+          { signal: job.abortController.signal },
+        );
+
+        if (
+          encodeResult.exitCode !== 0 ||
+          hasUnsafeTimestampWarnings(encodeResult.stderr)
+        ) {
+          return false;
+        }
+
+        await validateOutputFile(encodedPath);
+        entries.push({
+          kind: 'file',
+          path: encodedPath,
+          durationSec: encodeFrameCount / params.nominalFps,
+        });
+
+        if (plan.mode === 'hybrid') {
+          entries.push({
+            kind: 'source',
+            path: request.inputPath,
+            startSec: plan.copyStartSec,
+            endSec: plan.range.endSec,
+            durationSec: getFrameAlignedCopyDurationSec(
+              plan.copyStartSec,
+              plan.range.endSec,
+              params.nominalFps,
+            ),
+          });
+        }
+      }
+
+      await writeSmartRenderConcatFile(concatPath, entries);
+      const videoResult = await this.runFfmpeg(
+        job,
+        buildSmartRenderConcatArgs(
+          concatPath,
+          videoPath,
+          params,
+          false,
+        ),
+        expectedDurationSec,
+        'smart-render',
+        onProgress,
+        request.hasAudio ? [0, 0.15] : [0, 0.99],
+      );
+
+      if (
+        videoResult.exitCode !== 0 ||
+        hasUnsafeTimestampWarnings(videoResult.stderr)
+      ) {
+        return false;
+      }
+
+      await validateOutputFile(videoPath);
+
+      if (request.hasAudio) {
+        const audioChunks = splitAudioKeepRanges(keepRanges);
+        const audioSegments = new Array<SmartRenderAudioSegment>(
+          audioChunks.length,
+        );
+        const audioProgressSec = new Array<number>(audioChunks.length).fill(0);
+
+        await runWithConcurrency(
+          audioChunks,
+          SMART_RENDER_AUDIO_CONCURRENCY,
+          async (range, index) => {
+            const segmentPath = path.join(
+              workspace,
+              `audio-${String(index).padStart(4, '0')}.ts`,
+            );
+            const durationSec = range.endSec - range.startSec;
+            const result = await runProcess(
+              resolveFfmpegPath(),
+              buildSmartRenderAudioSegmentArgs(
+                request.inputPath,
+                segmentPath,
+                range,
+              ),
+              {
+                signal: job.abortController.signal,
+                onStdoutLine: (line) => {
+                  const outTimeSec = parseFfmpegOutTimeSec(line);
+                  if (outTimeSec === null) return;
+                  audioProgressSec[index] = Math.min(durationSec, outTimeSec);
+                  const completedSec = audioProgressSec.reduce(
+                    (sum, value) => sum + value,
+                    0,
+                  );
+                  this.emitProgress(
+                    job,
+                    completedSec,
+                    expectedDurationSec,
+                    'smart-render',
+                    onProgress,
+                    [0.15, 0.9],
+                  );
+                },
+              },
+            );
+
+            if (
+              result.exitCode !== 0 ||
+              hasUnsafeTimestampWarnings(result.stderr)
+            ) {
+              throw new Error('SMART_RENDER_AUDIO_SEGMENT_FAILED');
+            }
+
+            await validateOutputFile(segmentPath);
+            audioProgressSec[index] = durationSec;
+            audioSegments[index] = { path: segmentPath, durationSec };
+          },
+        );
+
+        const audioConcatPath = path.join(workspace, 'audio.ffconcat');
+        await writeSmartRenderAudioConcatFile(
+          audioConcatPath,
+          audioSegments,
+        );
+        const audioResult = await this.runFfmpeg(
+          job,
+          buildSmartRenderAudioConcatArgs(audioConcatPath, audioPath),
+          expectedDurationSec,
+          'smart-render',
+          onProgress,
+          [0.9, 0.95],
+        );
+        if (
+          audioResult.exitCode !== 0 ||
+          hasUnsafeTimestampWarnings(audioResult.stderr)
+        ) {
+          return false;
+        }
+        await validateOutputFile(audioPath);
+
+        const muxResult = await this.runFfmpeg(
+          job,
+          buildSmartRenderMuxArgs(videoPath, audioPath, tempOutputPath),
+          expectedDurationSec,
+          'smart-render',
+          onProgress,
+          [0.95, 0.99],
+        );
+        if (
+          muxResult.exitCode !== 0 ||
+          hasUnsafeTimestampWarnings(muxResult.stderr)
+        ) {
+          return false;
+        }
+      } else {
+        await rename(videoPath, tempOutputPath);
+      }
+
+      await validateOutputFile(tempOutputPath);
+
+      const actualDurationSec = await probeOutputDurationSec(
+        tempOutputPath,
+        job.abortController.signal,
+      );
+      if (actualDurationSec === null) {
+        return false;
+      }
+
+      const allowedDriftSec = Math.max(0.5, keepRanges.length * 0.05);
+      if (
+        Math.abs(actualDurationSec - expectedDurationSec) >
+        allowedDriftSec
+      ) {
+        await rm(tempOutputPath, { force: true }).catch(() => undefined);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      if (
+        job.abortController.signal.aborted ||
+        (error instanceof Error && error.message === 'PROCESS_ABORTED')
+      ) {
+        throw error;
+      }
+
+      await rm(tempOutputPath, { force: true }).catch(() => undefined);
+      return false;
+    } finally {
+      await rm(workspace, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
     }
   }
 
@@ -315,7 +670,8 @@ export class VideoExporter {
         strategy = 'smart-copy';
       } else {
         await rm(tempOutputPath, { force: true }).catch(() => undefined);
-        await this.runPreciseReencode(
+
+        const smartRenderSucceeded = await this.trySmartRender(
           job,
           request,
           tempOutputPath,
@@ -323,6 +679,20 @@ export class VideoExporter {
           keepRanges,
           onProgress,
         );
+
+        if (smartRenderSucceeded) {
+          strategy = 'smart-render';
+        } else {
+          await rm(tempOutputPath, { force: true }).catch(() => undefined);
+          await this.runPreciseReencode(
+            job,
+            request,
+            tempOutputPath,
+            expectedDurationSec,
+            keepRanges,
+            onProgress,
+          );
+        }
       }
 
       if (await pathExists(request.outputPath)) {
@@ -350,6 +720,10 @@ export class VideoExporter {
       await rm(createConcatPlanPath(tempOutputPath), { force: true }).catch(
         () => undefined,
       );
+      await rm(createSmartRenderWorkspace(tempOutputPath), {
+        recursive: true,
+        force: true,
+      }).catch(() => undefined);
 
       const cancelled =
         job.abortController.signal.aborted ||

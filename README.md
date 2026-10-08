@@ -36,7 +36,7 @@
 - Electron Main Process 统一封装 ffmpeg / ffprobe 调用。
 - 用户删除的是“时间区间”，源视频始终只读。
 - 检测与删除解耦：自动检测只生成候选，最终删除由用户确认。
-- 精确导出优先于无损 `-c copy`，MVP 采用重新编码保证切点准确。
+- 长视频导出优先采用 Keyframe-aware Smart Copy；非关键帧切点采用局部 GOP Smart Render；不满足安全条件时自动回退全量精确重编码。
 
 ## 建议仓库名
 
