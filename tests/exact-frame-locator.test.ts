@@ -3,13 +3,119 @@
 import { describe, expect, it } from 'vitest';
 import {
   findContiguousAnchorHashRange,
+  findExponentialSimilarityBracket,
   getVisualChangeThreshold,
   isFrameWithinVisualThreshold,
+  narrowSimilarityBoundaryBracket,
   normalizedMeanAbsoluteDifference,
   parseFrameMd5,
 } from '../electron/main/freeze/exact-frame-locator';
 
 describe('exact frame locator helpers', () => {
+  it('finds a long-range boundary with exponential probes then narrows it by binary search', async () => {
+    const anchorSec = 3000;
+    const durationSec = 10000;
+    const lowerBoundarySec = 1000;
+    const upperBoundarySec = 8000;
+    let leftCalls = 0;
+    let rightCalls = 0;
+
+    const leftProbe = async (timeSec: number) => {
+      leftCalls += 1;
+      return timeSec >= lowerBoundarySec;
+    };
+    const rightProbe = async (timeSec: number) => {
+      rightCalls += 1;
+      return timeSec <= upperBoundarySec;
+    };
+
+    const [leftCoarse, rightCoarse] = await Promise.all([
+      findExponentialSimilarityBracket(
+        anchorSec,
+        durationSec,
+        'left',
+        leftProbe,
+      ),
+      findExponentialSimilarityBracket(
+        anchorSec,
+        durationSec,
+        'right',
+        rightProbe,
+      ),
+    ]);
+
+    expect(leftCoarse.matchedSec).toBeGreaterThanOrEqual(
+      lowerBoundarySec,
+    );
+    expect(leftCoarse.differentSec).not.toBeNull();
+    expect(leftCoarse.differentSec!).toBeLessThan(
+      lowerBoundarySec,
+    );
+
+    expect(rightCoarse.matchedSec).toBeLessThanOrEqual(
+      upperBoundarySec,
+    );
+    expect(rightCoarse.differentSec).not.toBeNull();
+    expect(rightCoarse.differentSec!).toBeGreaterThan(
+      upperBoundarySec,
+    );
+
+    const [leftNarrowed, rightNarrowed] = await Promise.all([
+      narrowSimilarityBoundaryBracket(leftCoarse, leftProbe),
+      narrowSimilarityBoundaryBracket(rightCoarse, rightProbe),
+    ]);
+
+    expect(
+      Math.abs(
+        leftNarrowed.matchedSec -
+          (leftNarrowed.differentSec ?? leftNarrowed.matchedSec),
+      ),
+    ).toBeLessThanOrEqual(0.75);
+    expect(
+      Math.abs(
+        rightNarrowed.matchedSec -
+          (rightNarrowed.differentSec ?? rightNarrowed.matchedSec),
+      ),
+    ).toBeLessThanOrEqual(0.75);
+
+    expect(leftNarrowed.matchedSec).toBeGreaterThanOrEqual(
+      lowerBoundarySec,
+    );
+    expect(leftNarrowed.differentSec!).toBeLessThan(
+      lowerBoundarySec,
+    );
+    expect(rightNarrowed.matchedSec).toBeLessThanOrEqual(
+      upperBoundarySec,
+    );
+    expect(rightNarrowed.differentSec!).toBeGreaterThan(
+      upperBoundarySec,
+    );
+
+    // Thousands of seconds are bracketed/narrowed with only logarithmic probes.
+    expect(leftCalls).toBeLessThan(30);
+    expect(rightCalls).toBeLessThan(30);
+  });
+
+  it('returns the media edge when exponential search stays similar to the end', async () => {
+    const left = await findExponentialSimilarityBracket(
+      50,
+      100,
+      'left',
+      async () => true,
+    );
+    const right = await findExponentialSimilarityBracket(
+      50,
+      100,
+      'right',
+      async () => true,
+    );
+
+    expect(left.edgeSec).toBe(0);
+    expect(left.differentSec).toBeNull();
+    expect(right.edgeSec).toBe(100);
+    expect(right.differentSec).toBeNull();
+  });
+
   it('maps visual change levels to increasing normalized thresholds', () => {
     expect(getVisualChangeThreshold('exact')).toBe(0);
     expect(getVisualChangeThreshold('very-low')).toBe(0.00005);

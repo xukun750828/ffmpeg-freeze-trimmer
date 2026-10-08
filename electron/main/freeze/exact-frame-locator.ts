@@ -17,7 +17,11 @@ const SIMILARITY_WIDTH = 160;
 const SIMILARITY_HEIGHT = 90;
 const SIMILARITY_FRAME_BYTES = SIMILARITY_WIDTH * SIMILARITY_HEIGHT;
 const SIMILARITY_SAMPLE_FPS = 30;
-const SIMILARITY_CHUNK_SEC = 30;
+const COARSE_INITIAL_STEP_SEC = 1;
+const COARSE_MAX_PROBES = 32;
+const BINARY_TARGET_WINDOW_SEC = 0.75;
+const REFINE_PADDING_SEC = 0.35;
+const EDGE_PROBE_EPSILON_SEC = 1 / SIMILARITY_SAMPLE_FPS;
 
 export const VISUAL_CHANGE_THRESHOLDS: Record<VisualChangeLevel, number> = {
   exact: 0,
@@ -442,6 +446,7 @@ async function readNormalizedWindowFrames(
   startSec: number,
   durationSec: number,
   signal?: AbortSignal,
+  sampleFps = SIMILARITY_SAMPLE_FPS,
 ): Promise<Buffer> {
   const result = await runProcessBinary(
     resolveFfmpegPath(),
@@ -450,7 +455,7 @@ async function readNormalizedWindowFrames(
       startSec,
       durationSec,
       undefined,
-      SIMILARITY_SAMPLE_FPS,
+      sampleFps,
     ),
     { signal },
   );
@@ -460,6 +465,274 @@ async function readNormalizedWindowFrames(
   }
 
   return result.stdout;
+}
+
+type SimilarityBoundaryDirection = 'left' | 'right';
+
+export interface SimilarityBoundaryBracket {
+  matchedSec: number;
+  differentSec: number | null;
+  edgeSec: number | null;
+  probeCount: number;
+}
+
+async function readNormalizedFrameAt(
+  inputPath: string,
+  timeSec: number,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
+  return readNormalizedAnchorFrame(inputPath, timeSec, signal);
+}
+
+export async function findExponentialSimilarityBracket(
+  anchorSec: number,
+  durationSec: number,
+  direction: SimilarityBoundaryDirection,
+  isSimilarAt: (timeSec: number) => Promise<boolean>,
+): Promise<SimilarityBoundaryBracket> {
+  const sign = direction === 'left' ? -1 : 1;
+  let matchedSec = anchorSec;
+  let stepSec = COARSE_INITIAL_STEP_SEC;
+  let probeCount = 0;
+
+  for (let attempt = 0; attempt < COARSE_MAX_PROBES; attempt += 1) {
+    const rawCandidate = anchorSec + sign * stepSec;
+    const hitEdge =
+      direction === 'left'
+        ? rawCandidate <= 0
+        : rawCandidate >= durationSec;
+
+    const candidateSec =
+      direction === 'left'
+        ? Math.max(0, rawCandidate)
+        : Math.min(
+            Math.max(0, durationSec - EDGE_PROBE_EPSILON_SEC),
+            rawCandidate,
+          );
+
+    const similar = await isSimilarAt(candidateSec);
+    probeCount += 1;
+
+    if (!similar) {
+      return {
+        matchedSec,
+        differentSec: candidateSec,
+        edgeSec: null,
+        probeCount,
+      };
+    }
+
+    matchedSec = candidateSec;
+
+    if (hitEdge) {
+      return {
+        matchedSec,
+        differentSec: null,
+        edgeSec: direction === 'left' ? 0 : durationSec,
+        probeCount,
+      };
+    }
+
+    stepSec *= 2;
+  }
+
+  return {
+    matchedSec,
+    differentSec: null,
+    edgeSec: direction === 'left' ? 0 : durationSec,
+    probeCount,
+  };
+}
+
+export async function narrowSimilarityBoundaryBracket(
+  bracket: SimilarityBoundaryBracket,
+  isSimilarAt: (timeSec: number) => Promise<boolean>,
+  targetWindowSec = BINARY_TARGET_WINDOW_SEC,
+): Promise<SimilarityBoundaryBracket> {
+  if (bracket.differentSec === null) {
+    return bracket;
+  }
+
+  let matchedSec = bracket.matchedSec;
+  let differentSec = bracket.differentSec;
+  let probeCount = bracket.probeCount;
+
+  while (Math.abs(differentSec - matchedSec) > targetWindowSec) {
+    const midpoint = (matchedSec + differentSec) / 2;
+    const similar = await isSimilarAt(midpoint);
+    probeCount += 1;
+
+    if (similar) {
+      matchedSec = midpoint;
+    } else {
+      differentSec = midpoint;
+    }
+  }
+
+  return {
+    matchedSec,
+    differentSec,
+    edgeSec: null,
+    probeCount,
+  };
+}
+
+async function refineSimilarityBoundary(
+  request: ExactFrameMatchRequest,
+  anchorFrame: Uint8Array,
+  threshold: number,
+  direction: SimilarityBoundaryDirection,
+  bracket: SimilarityBoundaryBracket,
+  signal?: AbortSignal,
+): Promise<number> {
+  if (bracket.edgeSec !== null) {
+    return bracket.edgeSec;
+  }
+
+  if (bracket.differentSec === null) {
+    return direction === 'left' ? 0 : request.durationSec;
+  }
+
+  const lowSec = Math.max(
+    0,
+    Math.min(bracket.matchedSec, bracket.differentSec) -
+      REFINE_PADDING_SEC,
+  );
+  const highSec = Math.min(
+    request.durationSec,
+    Math.max(bracket.matchedSec, bracket.differentSec) +
+      REFINE_PADDING_SEC,
+  );
+
+  const buffer = await readNormalizedWindowFrames(
+    request.path,
+    lowSec,
+    Math.max(0, highSec - lowSec),
+    signal,
+    SIMILARITY_SAMPLE_FPS,
+  );
+
+  const frameCount = Math.floor(
+    buffer.length / SIMILARITY_FRAME_BYTES,
+  );
+  if (frameCount <= 0) {
+    return bracket.matchedSec;
+  }
+
+  const frameDurationSec = 1 / SIMILARITY_SAMPLE_FPS;
+  const isMatch = (index: number) =>
+    isFrameWithinVisualThreshold(
+      anchorFrame,
+      getFrameFromBuffer(buffer, index),
+      threshold,
+    );
+
+  if (direction === 'left') {
+    let index = frameCount - 1;
+
+    while (index >= 0 && !isMatch(index)) {
+      index -= 1;
+    }
+
+    if (index < 0) {
+      return bracket.matchedSec;
+    }
+
+    while (index > 0 && isMatch(index - 1)) {
+      index -= 1;
+    }
+
+    return Math.max(0, lowSec + index * frameDurationSec);
+  }
+
+  let index = 0;
+
+  while (index < frameCount && !isMatch(index)) {
+    index += 1;
+  }
+
+  if (index >= frameCount) {
+    return bracket.matchedSec;
+  }
+
+  while (index + 1 < frameCount && isMatch(index + 1)) {
+    index += 1;
+  }
+
+  return Math.min(
+    request.durationSec,
+    lowSec + (index + 1) * frameDurationSec,
+  );
+}
+
+async function locateSimilarityBoundary(
+  request: ExactFrameMatchRequest,
+  anchorFrame: Uint8Array,
+  threshold: number,
+  direction: SimilarityBoundaryDirection,
+  signal?: AbortSignal,
+): Promise<number> {
+  const anchorSec = Math.max(
+    0,
+    Math.min(request.durationSec, request.currentTimeSec),
+  );
+
+  const similarityCache = new Map<string, boolean>();
+
+  const isSimilarAt = async (timeSec: number) => {
+    if (signal?.aborted) {
+      throw new Error('PROCESS_ABORTED');
+    }
+
+    const clampedSec = Math.max(
+      0,
+      Math.min(
+        Math.max(0, request.durationSec - EDGE_PROBE_EPSILON_SEC),
+        timeSec,
+      ),
+    );
+    const key = clampedSec.toFixed(6);
+    const cached = similarityCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const frame = await readNormalizedFrameAt(
+      request.path,
+      clampedSec,
+      signal,
+    );
+    const similar =
+      frame !== null &&
+      isFrameWithinVisualThreshold(
+        anchorFrame,
+        frame,
+        threshold,
+      );
+
+    similarityCache.set(key, similar);
+    return similar;
+  };
+
+  const coarse = await findExponentialSimilarityBracket(
+    anchorSec,
+    request.durationSec,
+    direction,
+    isSimilarAt,
+  );
+  const narrowed = await narrowSimilarityBoundaryBracket(
+    coarse,
+    isSimilarAt,
+  );
+
+  return refineSimilarityBoundary(
+    request,
+    anchorFrame,
+    threshold,
+    direction,
+    narrowed,
+    signal,
+  );
 }
 
 function getFrameFromBuffer(
@@ -566,86 +839,43 @@ async function locateSimilarityRange(
     return null;
   }
 
-  let startSec = anchorSec;
-  let endSec = anchorSec;
-
-  let leftCursorSec = anchorSec;
-  while (leftCursorSec > 0) {
-    if (signal?.aborted) {
-      throw new Error('PROCESS_ABORTED');
-    }
-
-    const chunkStartSec = Math.max(
-      0,
-      leftCursorSec - SIMILARITY_CHUNK_SEC,
-    );
-    const buffer = await readNormalizedWindowFrames(
-      request.path,
-      chunkStartSec,
-      leftCursorSec - chunkStartSec,
-      signal,
-    );
-
-    const scan = scanSimilarityChunkFromRight(
-      buffer,
-      chunkStartSec,
-      leftCursorSec,
+  const [startSec, endSec] = await Promise.all([
+    locateSimilarityBoundary(
+      request,
       anchorFrame,
       threshold,
-    );
-    startSec = scan.boundarySec;
-
-    if (!scan.allMatched || chunkStartSec <= 0) {
-      break;
-    }
-
-    leftCursorSec = chunkStartSec;
-  }
-
-  let rightCursorSec = anchorSec;
-  while (rightCursorSec < request.durationSec) {
-    if (signal?.aborted) {
-      throw new Error('PROCESS_ABORTED');
-    }
-
-    const chunkEndSec = Math.min(
-      request.durationSec,
-      rightCursorSec + SIMILARITY_CHUNK_SEC,
-    );
-    const buffer = await readNormalizedWindowFrames(
-      request.path,
-      rightCursorSec,
-      chunkEndSec - rightCursorSec,
+      'left',
       signal,
-    );
-
-    const scan = scanSimilarityChunkFromLeft(
-      buffer,
-      rightCursorSec,
-      chunkEndSec,
+    ),
+    locateSimilarityBoundary(
+      request,
       anchorFrame,
       threshold,
-    );
-    endSec = scan.boundarySec;
-
-    if (!scan.allMatched || chunkEndSec >= request.durationSec) {
-      break;
-    }
-
-    rightCursorSec = chunkEndSec;
-  }
+      'right',
+      signal,
+    ),
+  ]);
 
   const minimumDurationSec = 1 / SIMILARITY_SAMPLE_FPS;
-  if (endSec <= startSec) {
-    endSec = Math.min(
+  const normalizedStartSec = Math.max(
+    0,
+    Math.min(startSec, anchorSec),
+  );
+  let normalizedEndSec = Math.min(
+    request.durationSec,
+    Math.max(endSec, anchorSec),
+  );
+
+  if (normalizedEndSec <= normalizedStartSec) {
+    normalizedEndSec = Math.min(
       request.durationSec,
-      startSec + minimumDurationSec,
+      normalizedStartSec + minimumDurationSec,
     );
   }
 
   return {
-    startSec,
-    endSec,
+    startSec: normalizedStartSec,
+    endSec: normalizedEndSec,
   };
 }
 
