@@ -19,6 +19,7 @@ interface FreezePanelProps {
   maxIntervals: number;
   exactMatchStatus: ExactMatchStatus;
   exactFrameMatch: ExactFrameMatch | null;
+  exactMatchSelectedForRemoval: boolean;
   visualChangeLevel: VisualChangeLevel;
   disabled: boolean;
   selectionDisabled: boolean;
@@ -27,6 +28,7 @@ interface FreezePanelProps {
   onMaxIntervalsChange: (count: number) => void;
   onStartDetection: () => void;
   onLocateExactFrameMatch: () => void;
+  onToggleExactMatchRemoval: () => void;
   onVisualChangeLevelChange: (level: VisualChangeLevel) => void;
   onPreviewRange: (startSec: number, endSec: number) => void;
   onPreview: (interval: FreezeInterval) => void;
@@ -44,6 +46,7 @@ export function FreezePanel({
   maxIntervals,
   exactMatchStatus,
   exactFrameMatch,
+  exactMatchSelectedForRemoval,
   visualChangeLevel,
   disabled,
   selectionDisabled,
@@ -52,21 +55,28 @@ export function FreezePanel({
   onMaxIntervalsChange,
   onStartDetection,
   onLocateExactFrameMatch,
+  onToggleExactMatchRemoval,
   onVisualChangeLevelChange,
   onPreviewRange,
   onPreview,
   onToggleRemoval,
   onSelectAll,
 }: FreezePanelProps) {
-  const selectedCount = intervals.filter((interval) => interval.selectedForRemoval).length;
-  const allSelected = intervals.length > 0 && selectedCount === intervals.length;
+  const selectedCount = intervals.filter(
+    (interval) => interval.selectedForRemoval,
+  ).length;
+  const allSelected =
+    intervals.length > 0 && selectedCount === intervals.length;
+  const detectedCount = intervals.filter(
+    (interval) => interval.source !== 'similarity',
+  ).length;
 
   const summary =
     status === 'detecting'
       ? '正在从当前时间点检测…'
       : status === 'ready'
-        ? intervals.length > 0
-          ? `发现 ${intervals.length} 个静止区间`
+        ? detectedCount > 0
+          ? `发现 ${detectedCount} 个静止区间`
           : '当前方向未发现满足条件的静止区间'
         : status === 'failed'
           ? '检测失败'
@@ -131,26 +141,45 @@ export function FreezePanel({
 
         {exactFrameMatch && (
           <div className="exact-match-result">
-            <button
-              type="button"
-              className="exact-parent-range"
-              aria-label="预览当前画面相似区间"
-              onClick={() =>
-                onPreviewRange(
-                  exactFrameMatch.startSec,
-                  exactFrameMatch.endSec,
-                )
-              }
+            <div
+              className={`exact-parent-range-card${exactMatchSelectedForRemoval ? ' selected' : ''}`}
             >
-              <span>
-                <strong>父区间 · 当前画面相似</strong>
-                <small>
-                  {formatPreciseTime(exactFrameMatch.startSec)} →{' '}
-                  {formatPreciseTime(exactFrameMatch.endSec)}
-                </small>
-              </span>
-              <span>{exactFrameMatch.durationSec.toFixed(3)} 秒</span>
-            </button>
+              <button
+                type="button"
+                className="exact-parent-range"
+                aria-label="预览当前画面相似区间"
+                onClick={() =>
+                  onPreviewRange(
+                    exactFrameMatch.startSec,
+                    exactFrameMatch.endSec,
+                  )
+                }
+              >
+                <span>
+                  <strong>父区间 · 当前画面相似</strong>
+                  <small>
+                    {formatPreciseTime(exactFrameMatch.startSec)} →{' '}
+                    {formatPreciseTime(exactFrameMatch.endSec)}
+                  </small>
+                </span>
+                <span>{exactFrameMatch.durationSec.toFixed(3)} 秒</span>
+              </button>
+              <button
+                type="button"
+                className={`exact-removal-button${exactMatchSelectedForRemoval ? ' selected' : ''}`}
+                aria-label={
+                  exactMatchSelectedForRemoval
+                    ? '取消删除当前相似区间'
+                    : '加入当前相似区间待删除'
+                }
+                disabled={selectionDisabled}
+                onClick={onToggleExactMatchRemoval}
+              >
+                {exactMatchSelectedForRemoval
+                  ? '取消删除'
+                  : '加入待删除'}
+              </button>
+            </div>
 
             <p className="audio-classification-note">
               音频子区间按音频能量区分“有 / 无背景声音”，不区分对白、音乐或环境声来源。
@@ -307,7 +336,12 @@ export function FreezePanel({
       </div>
 
       {intervals.length > 0 && (
-        <div className="selection-toolbar">
+        <>
+          <div className="candidate-list-heading">
+            <h3>删除候选区间</h3>
+            <span>相似定位与方向检测结果统一在这里管理</span>
+          </div>
+          <div className="selection-toolbar">
           <label>
             <input
               aria-label="全选静止区间"
@@ -318,8 +352,9 @@ export function FreezePanel({
             />
             <span>全选</span>
           </label>
-          <span>已选择 {selectedCount} / {intervals.length}</span>
-        </div>
+            <span>已选择 {selectedCount} / {intervals.length}</span>
+          </div>
+        </>
       )}
 
       <div className="freeze-list" aria-live="polite">
@@ -347,10 +382,19 @@ export function FreezePanel({
                 onClick={() => onPreview(interval)}
               >
                 <span className="freeze-times">
-                  <strong>
-                    {formatPreciseTime(interval.startSec)} →{' '}
-                    {formatPreciseTime(interval.endSec)}
-                  </strong>
+                  <span className="candidate-source-row">
+                    <span
+                      className={`candidate-source-badge ${interval.source === 'similarity' ? 'similarity' : 'detected'}`}
+                    >
+                      {interval.source === 'similarity'
+                        ? '相似定位'
+                        : '方向检测'}
+                    </span>
+                    <strong>
+                      {formatPreciseTime(interval.startSec)} →{' '}
+                      {formatPreciseTime(interval.endSec)}
+                    </strong>
+                  </span>
                   <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
                 </span>
                 <span className="preview-label">▶</span>

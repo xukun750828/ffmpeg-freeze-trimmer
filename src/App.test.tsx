@@ -403,6 +403,151 @@ describe('selection, timeline, and export workflow', () => {
     expect(screen.getByText('已选 2 段')).toBeInTheDocument();
   });
 
+  it('adds and removes the current similarity parent interval from deletion candidates', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 42.5;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('当前画面相似区间持续 8.000 秒'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '加入当前相似区间待删除',
+      }),
+    );
+
+    expect(screen.getByText('相似定位')).toBeInTheDocument();
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:08.000')).toBeInTheDocument();
+    expect(screen.getByText('输出约 01:57.500')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: '取消删除当前相似区间',
+      }),
+    ).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '取消删除当前相似区间',
+      }),
+    );
+
+    expect(screen.getByText('已选 0 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:00.000')).toBeInTheDocument();
+    expect(screen.getByText('输出约 02:05.500')).toBeInTheDocument();
+  });
+
+  it('preserves selected similarity candidates when direction detection is rerun', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 42.5;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+    await waitFor(() => {
+      expect(
+        screen.getByText('当前画面相似区间持续 8.000 秒'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '加入当前相似区间待删除',
+      }),
+    );
+
+    await startDetectionAndWait();
+
+    expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+    expect(screen.getByText('已选择 1 / 3')).toBeInTheDocument();
+    expect(screen.getAllByText('方向检测')).toHaveLength(2);
+    expect(screen.getAllByText('相似定位')).toHaveLength(1);
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+  });
+
+  it('merges overlapping similarity and detected ranges for statistics and export', async () => {
+    const desktopApi = createDesktopApi();
+    desktopApi.locateExactFrameMatch.mockResolvedValueOnce({
+      anchorSec: 16,
+      startSec: 14,
+      endSec: 20,
+      durationSec: 6,
+      visualChangeLevel: 'standard',
+      maxNormalizedDifference: 0.0005,
+      audioSubIntervals: [
+        {
+          id: 'audio-overlap',
+          startSec: 14,
+          endSec: 20,
+          durationSec: 6,
+          audioPresence: 'sound',
+        },
+      ],
+    });
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 16;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+    await waitFor(() => {
+      expect(
+        screen.getByText('当前画面相似区间持续 6.000 秒'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '加入当前相似区间待删除',
+      }),
+    );
+
+    await startDetectionAndWait();
+    fireEvent.click(screen.getByLabelText('选择删除静止区间 2'));
+
+    expect(screen.getByText('已选 2 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:07.600')).toBeInTheDocument();
+    expect(screen.getByText('输出约 01:57.900')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '导出视频' }));
+
+    await waitFor(() => {
+      expect(desktopApi.startExport).toHaveBeenCalledWith({
+        inputPath: 'C:\\Videos\\demo.mp4',
+        outputPath: 'C:\\Videos\\demo_trimmed.mp4',
+        durationSec: 125.5,
+        hasAudio: true,
+        removeRanges: [
+          {
+            startSec: 12.4,
+            endSec: 20,
+          },
+        ],
+      });
+    });
+  });
+
   it('previews intervals from the timeline', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;

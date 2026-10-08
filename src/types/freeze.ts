@@ -1,9 +1,12 @@
+export type FreezeIntervalSource = 'detected' | 'similarity';
+
 export interface FreezeInterval {
   id: string;
   startSec: number;
   endSec: number;
   durationSec: number;
   selectedForRemoval: boolean;
+  source?: FreezeIntervalSource;
 }
 
 export type DetectionDirection = 'forward' | 'backward';

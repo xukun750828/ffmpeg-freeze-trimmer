@@ -573,3 +573,76 @@ select { width: 100%; padding: 7px 8px; }
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
+
+.exact-parent-range-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.exact-parent-range-card.selected .exact-parent-range {
+  border-color: #8a4d4d;
+  background: #27191c;
+}
+
+.exact-removal-button {
+  min-width: 92px;
+  border-color: #4a5260;
+  background: #1a1f28;
+}
+
+.exact-removal-button.selected {
+  border-color: #8a4d4d;
+  background: #3a1d22;
+}
+
+.candidate-list-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 8px;
+}
+
+.candidate-list-heading h3 {
+  margin: 0;
+  color: #f1f5f9;
+  font-size: 13px;
+}
+
+.candidate-list-heading span {
+  color: #818b9c;
+  font-size: 11px;
+}
+
+.candidate-source-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.freeze-times .candidate-source-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid #3b4656;
+  border-radius: 999px;
+  color: #aeb8c8;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.freeze-times .candidate-source-badge.similarity {
+  border-color: #4f6b9a;
+  color: #a9c5ff;
+  background: #172238;
+}
+
+.freeze-times .candidate-source-badge.detected {
+  border-color: #51604b;
+  color: #b7c8ae;
+  background: #192019;
+}

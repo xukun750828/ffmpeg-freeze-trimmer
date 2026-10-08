@@ -14,6 +14,10 @@ import type {
 } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
 import { getUserFriendlyError } from './utils/error-message';
+import {
+  measureTimeRangeUnion,
+  mergeTimeRanges,
+} from './utils/time-ranges';
 import { formatPreciseTime, formatTime } from './utils/time';
 
 const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
@@ -24,6 +28,26 @@ const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
 
 const PREVIEW_LEAD_SEC = 0.5;
 const PREVIEW_TAIL_SEC = 0.5;
+const SIMILARITY_RANGE_MATCH_EPSILON_SEC = 0.05;
+
+function buildSimilarityIntervalId(match: ExactFrameMatch): string {
+  return `similarity-${Math.round(match.startSec * 1000)}-${Math.round(
+    match.endSec * 1000,
+  )}`;
+}
+
+function isSameSimilarityRange(
+  interval: FreezeInterval,
+  match: ExactFrameMatch,
+): boolean {
+  return (
+    interval.source === 'similarity' &&
+    Math.abs(interval.startSec - match.startSec) <=
+      SIMILARITY_RANGE_MATCH_EPSILON_SEC &&
+    Math.abs(interval.endSec - match.endSec) <=
+      SIMILARITY_RANGE_MATCH_EPSILON_SEC
+  );
+}
 
 type ExportUiStatus = 'idle' | 'exporting' | 'completed' | 'cancelled' | 'failed';
 
@@ -106,8 +130,20 @@ export default function App() {
     [intervals],
   );
 
+  const exactMatchRemovalInterval = useMemo(() => {
+    if (!exactFrameMatch) return null;
+    return (
+      intervals.find((interval) =>
+        isSameSimilarityRange(interval, exactFrameMatch),
+      ) ?? null
+    );
+  }, [exactFrameMatch, intervals]);
+
+  const exactMatchSelectedForRemoval =
+    exactMatchRemovalInterval?.selectedForRemoval ?? false;
+
   const selectedDurationSec = useMemo(
-    () => selectedIntervals.reduce((sum, interval) => sum + interval.durationSec, 0),
+    () => measureTimeRangeUnion(selectedIntervals),
     [selectedIntervals],
   );
 
@@ -136,7 +172,9 @@ export default function App() {
     setCurrentTimeSec(detectionStartSec);
     setError(null);
     setAnalysisStatus('detecting');
-    setIntervals([]);
+    setIntervals((current) =>
+      current.filter((interval) => interval.source === 'similarity'),
+    );
     setActiveIntervalId(null);
     setPreviewEndSec(null);
 
@@ -150,15 +188,19 @@ export default function App() {
         hasAudio: media.hasAudio,
         options: detectionOptions,
       });
-      setIntervals(
-        detected.map((interval) => ({
+      setIntervals((current) => [
+        ...current.filter((interval) => interval.source === 'similarity'),
+        ...detected.map((interval) => ({
           ...interval,
+          source: 'detected' as const,
           selectedForRemoval: false,
         })),
-      );
+      ]);
       setAnalysisStatus('ready');
     } catch (caught) {
-      setIntervals([]);
+      setIntervals((current) =>
+        current.filter((interval) => interval.source === 'similarity'),
+      );
       setAnalysisStatus('failed');
       setError(getUserFriendlyError(caught, '静止画面检测失败'));
     }
@@ -347,6 +389,44 @@ export default function App() {
     );
   }
 
+  function handleToggleExactMatchRemoval() {
+    if (
+      !exactFrameMatch ||
+      exportStatus === 'exporting'
+    ) {
+      return;
+    }
+
+    setIntervals((current) => {
+      const existing = current.find((interval) =>
+        isSameSimilarityRange(interval, exactFrameMatch),
+      );
+
+      if (existing) {
+        return current.map((interval) =>
+          interval.id === existing.id
+            ? {
+                ...interval,
+                selectedForRemoval: !interval.selectedForRemoval,
+              }
+            : interval,
+        );
+      }
+
+      return [
+        ...current,
+        {
+          id: buildSimilarityIntervalId(exactFrameMatch),
+          startSec: exactFrameMatch.startSec,
+          endSec: exactFrameMatch.endSec,
+          durationSec: exactFrameMatch.durationSec,
+          selectedForRemoval: true,
+          source: 'similarity',
+        },
+      ];
+    });
+  }
+
   function handleSelectAll(selected: boolean) {
     if (exportStatus === 'exporting') return;
 
@@ -386,10 +466,7 @@ export default function App() {
         outputPath,
         durationSec: media.durationSec,
         hasAudio: media.hasAudio,
-        removeRanges: selectedIntervals.map((interval) => ({
-          startSec: interval.startSec,
-          endSec: interval.endSec,
-        })),
+        removeRanges: mergeTimeRanges(selectedIntervals),
       });
 
       setActiveExportJobId(jobId);
@@ -542,6 +619,7 @@ export default function App() {
             maxIntervals={maxDetectionIntervals}
             exactMatchStatus={exactMatchStatus}
             exactFrameMatch={exactFrameMatch}
+            exactMatchSelectedForRemoval={exactMatchSelectedForRemoval}
             visualChangeLevel={visualChangeLevel}
             disabled={!media || exportStatus === 'exporting'}
             selectionDisabled={exportStatus === 'exporting'}
@@ -550,6 +628,7 @@ export default function App() {
             onMaxIntervalsChange={setMaxDetectionIntervals}
             onStartDetection={handleStartDetection}
             onLocateExactFrameMatch={handleLocateExactFrameMatch}
+            onToggleExactMatchRemoval={handleToggleExactMatchRemoval}
             onVisualChangeLevelChange={(level) => {
               setVisualChangeLevel(level);
               setExactFrameMatch(null);
