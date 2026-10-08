@@ -34,11 +34,20 @@ export interface AudioSubInterval {
   audioPresence: AudioPresence;
 }
 
+export type VisualChangeLevel =
+  | 'exact'
+  | 'very-low'
+  | 'low'
+  | 'standard'
+  | 'relaxed'
+  | 'very-relaxed';
+
 export interface ExactFrameMatchRequest {
   path: string;
   durationSec: number;
   currentTimeSec: number;
   hasAudio: boolean;
+  visualChangeLevel: VisualChangeLevel;
 }
 
 export interface ExactFrameMatch {
@@ -46,6 +55,8 @@ export interface ExactFrameMatch {
   startSec: number;
   endSec: number;
   durationSec: number;
+  visualChangeLevel: VisualChangeLevel;
+  maxNormalizedDifference: number;
   audioSubIntervals: AudioSubInterval[];
 }
 

@@ -245,9 +245,12 @@ describe('real FFmpeg pipeline', () => {
         durationSec: source.durationSec,
         currentTimeSec: 5,
         hasAudio: true,
+        visualChangeLevel: 'standard',
       });
 
       expect(match).not.toBeNull();
+      expect(match!.visualChangeLevel).toBe('standard');
+      expect(match!.maxNormalizedDifference).toBe(0.0005);
       expect(match!.startSec).toBeGreaterThanOrEqual(1.8);
       expect(match!.startSec).toBeLessThan(2.2);
       expect(match!.endSec).toBeGreaterThan(7.8);

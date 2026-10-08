@@ -56,6 +56,8 @@ function createDesktopApi() {
       startSec: 40,
       endSec: 48,
       durationSec: 8,
+      visualChangeLevel: 'standard',
+      maxNormalizedDifference: 0.0005,
       audioSubIntervals: [
         {
           id: 'audio-0001',
@@ -151,7 +153,7 @@ describe('App media import and manual directed freeze detection', () => {
     });
   });
 
-  it('locates an exact current-frame parent interval with sound and silence child intervals', async () => {
+  it('locates a configurable current-frame similarity interval with sound and silence child intervals', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
@@ -166,7 +168,7 @@ describe('App media import and manual directed freeze detection', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('完全一致画面持续 8.000 秒'),
+        screen.getByText('当前画面相似区间持续 8.000 秒'),
       ).toBeInTheDocument();
     });
 
@@ -175,9 +177,13 @@ describe('App media import and manual directed freeze detection', () => {
       durationSec: 125.5,
       currentTimeSec: 42.5,
       hasAudio: true,
+      visualChangeLevel: 'standard',
     });
 
     const exactPanel = screen.getByLabelText('当前画面精确定位');
+    expect(screen.getByLabelText('当前画面允许变化等级')).toHaveValue(
+      'standard',
+    );
     expect(within(exactPanel).getAllByText('有背景声音')).toHaveLength(2);
     expect(within(exactPanel).getByText('无背景声音')).toBeInTheDocument();
     expect(screen.getByText('00:40.000 → 00:48.000')).toBeInTheDocument();
@@ -190,6 +196,34 @@ describe('App media import and manual directed freeze detection', () => {
 
     expect(video.currentTime).toBeCloseTo(42.5, 3);
     expect(playSpy).toHaveBeenCalledOnce();
+  });
+
+  it('uses the selected current-frame visual change level', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    fireEvent.change(screen.getByLabelText('当前画面允许变化等级'), {
+      target: { value: 'relaxed' },
+    });
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 50;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+
+    await waitFor(() => {
+      expect(desktopApi.locateExactFrameMatch).toHaveBeenCalledWith({
+        path: 'C:\\Videos\\demo.mp4',
+        durationSec: 125.5,
+        currentTimeSec: 50,
+        hasAudio: true,
+        visualChangeLevel: 'relaxed',
+      });
+    });
   });
 
   it('uses edited visual, audio, direction, and interval-count settings', async () => {

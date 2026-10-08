@@ -6,6 +6,12 @@ export interface ProcessResult {
   stderr: string;
 }
 
+export interface BinaryProcessResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: string;
+}
+
 export interface ProcessRunOptions {
   signal?: AbortSignal;
   onStdoutLine?: (line: string) => void;
@@ -92,6 +98,64 @@ export function runProcess(
       resolve({
         exitCode: exitCode ?? -1,
         stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+export function runProcessBinary(
+  executable: string,
+  args: string[],
+  options: Pick<ProcessRunOptions, 'signal' | 'onStderrLine'> = {},
+): Promise<BinaryProcessResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      shell: false,
+      windowsHide: true,
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    let stderr = '';
+    let settled = false;
+    const stderrLines = new LineAccumulator(options.onStderrLine);
+
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
+    const abortHandler = () => {
+      child.kill();
+      finishReject(new Error('PROCESS_ABORTED'));
+    };
+
+    options.signal?.addEventListener('abort', abortHandler, { once: true });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutChunks.push(Buffer.from(chunk));
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+      stderrLines.push(chunk);
+    });
+
+    child.on('error', () => {
+      finishReject(new Error('PROCESS_START_FAILED'));
+    });
+
+    child.on('close', (exitCode) => {
+      stderrLines.flush();
+      options.signal?.removeEventListener('abort', abortHandler);
+
+      if (settled) return;
+      settled = true;
+
+      resolve({
+        exitCode: exitCode ?? -1,
+        stdout: Buffer.concat(stdoutChunks),
         stderr,
       });
     });

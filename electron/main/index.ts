@@ -112,7 +112,15 @@ app.whenReady().then(() => {
         !Number.isFinite(request.currentTimeSec) ||
         request.currentTimeSec < 0 ||
         request.currentTimeSec > request.durationSec ||
-        typeof request.hasAudio !== 'boolean'
+        typeof request.hasAudio !== 'boolean' ||
+        ![
+          'exact',
+          'very-low',
+          'low',
+          'standard',
+          'relaxed',
+          'very-relaxed',
+        ].includes(request.visualChangeLevel)
       ) {
         throw new Error('INVALID_DETECTION_RANGE');
       }

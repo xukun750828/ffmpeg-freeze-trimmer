@@ -498,3 +498,14 @@ select { width: 100%; padding: 7px 8px; }
   font-size: 11px;
   line-height: 1.45 !important;
 }
+
+.exact-change-level {
+  display: grid;
+  gap: 6px;
+  color: #aeb6c4;
+  font-size: 13px;
+}
+
+.exact-change-level select {
+  width: 100%;
+}

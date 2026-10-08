@@ -8,6 +8,7 @@ import type {
   ExactFrameMatch,
   ExactMatchStatus,
   FreezeInterval,
+  VisualChangeLevel,
 } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
 import { getUserFriendlyError } from './utils/error-message';
@@ -47,6 +48,8 @@ export default function App() {
     useState<ExactMatchStatus>('idle');
   const [exactFrameMatch, setExactFrameMatch] =
     useState<ExactFrameMatch | null>(null);
+  const [visualChangeLevel, setVisualChangeLevel] =
+    useState<VisualChangeLevel>('standard');
 
   const [exportStatus, setExportStatus] = useState<ExportUiStatus>('idle');
   const [exportProgress, setExportProgress] = useState(0);
@@ -240,6 +243,7 @@ export default function App() {
         durationSec: media.durationSec,
         currentTimeSec: anchorSec,
         hasAudio: media.hasAudio,
+        visualChangeLevel,
       });
 
       setExactFrameMatch(match);
@@ -525,6 +529,7 @@ export default function App() {
             maxIntervals={maxDetectionIntervals}
             exactMatchStatus={exactMatchStatus}
             exactFrameMatch={exactFrameMatch}
+            visualChangeLevel={visualChangeLevel}
             disabled={!media || exportStatus === 'exporting'}
             selectionDisabled={exportStatus === 'exporting'}
             onOptionsChange={setDetectionOptions}
@@ -532,6 +537,11 @@ export default function App() {
             onMaxIntervalsChange={setMaxDetectionIntervals}
             onStartDetection={handleStartDetection}
             onLocateExactFrameMatch={handleLocateExactFrameMatch}
+            onVisualChangeLevelChange={(level) => {
+              setVisualChangeLevel(level);
+              setExactFrameMatch(null);
+              setExactMatchStatus('idle');
+            }}
             onPreviewRange={(startSec, endSec) =>
               handlePreviewRange(startSec, endSec)
             }

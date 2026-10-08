@@ -1,13 +1,32 @@
 import { resolveFfmpegPath } from '../ffmpeg-paths';
-import { runProcess } from '../process/process-runner';
+import {
+  runProcess,
+  runProcessBinary,
+} from '../process/process-runner';
 import { detectAudioSubIntervals } from './silence-detector';
 import type {
   ExactFrameMatch,
   ExactFrameMatchRequest,
+  VisualChangeLevel,
 } from './types';
 
 const INITIAL_SCAN_RADIUS_SEC = 5;
 const MAX_SCAN_EXPANSIONS = 18;
+
+const SIMILARITY_WIDTH = 160;
+const SIMILARITY_HEIGHT = 90;
+const SIMILARITY_FRAME_BYTES = SIMILARITY_WIDTH * SIMILARITY_HEIGHT;
+const SIMILARITY_SAMPLE_FPS = 30;
+const SIMILARITY_CHUNK_SEC = 30;
+
+export const VISUAL_CHANGE_THRESHOLDS: Record<VisualChangeLevel, number> = {
+  exact: 0,
+  'very-low': 0.00005,
+  low: 0.0002,
+  standard: 0.0005,
+  relaxed: 0.0008,
+  'very-relaxed': 0.001,
+};
 
 export interface FrameHashSample {
   startSec: number;
@@ -22,6 +41,55 @@ interface ParsedFrameMd5 {
     duration: number;
     hash: string;
   }>;
+}
+
+interface LocatedVisualRange {
+  startSec: number;
+  endSec: number;
+}
+
+export function getVisualChangeThreshold(
+  level: VisualChangeLevel,
+): number {
+  return VISUAL_CHANGE_THRESHOLDS[level];
+}
+
+export function normalizedMeanAbsoluteDifference(
+  anchor: Uint8Array,
+  candidate: Uint8Array,
+): number {
+  if (anchor.length !== candidate.length || anchor.length === 0) {
+    throw new Error('FRAME_COMPARISON_SIZE_MISMATCH');
+  }
+
+  let sum = 0;
+  for (let index = 0; index < anchor.length; index += 1) {
+    sum += Math.abs(anchor[index] - candidate[index]);
+  }
+
+  return sum / (anchor.length * 255);
+}
+
+export function isFrameWithinVisualThreshold(
+  anchor: Uint8Array,
+  candidate: Uint8Array,
+  threshold: number,
+): boolean {
+  if (anchor.length !== candidate.length || anchor.length === 0) {
+    return false;
+  }
+
+  const maxDifferenceSum = threshold * anchor.length * 255;
+  let sum = 0;
+
+  for (let index = 0; index < anchor.length; index += 1) {
+    sum += Math.abs(anchor[index] - candidate[index]);
+    if (sum > maxDifferenceSum) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function buildFrameMd5Args(
@@ -216,10 +284,10 @@ export function findContiguousAnchorHashRange(
   };
 }
 
-export async function locateExactFrameMatch(
+async function locateExactMd5Range(
   request: ExactFrameMatchRequest,
   signal?: AbortSignal,
-): Promise<ExactFrameMatch | null> {
+): Promise<LocatedVisualRange | null> {
   const anchorSec = Math.max(
     0,
     Math.min(request.durationSec, request.currentTimeSec),
@@ -295,8 +363,319 @@ export async function locateExactFrameMatch(
     return null;
   }
 
-  const startSec = Math.max(0, matchedRange.startSec);
-  const endSec = Math.min(request.durationSec, matchedRange.endSec);
+  return {
+    startSec: matchedRange.startSec,
+    endSec: matchedRange.endSec,
+  };
+}
+
+function buildNormalizedRawFrameArgs(
+  inputPath: string,
+  startSec: number,
+  durationSec?: number,
+  maxFrames?: number,
+  sampleFps?: number,
+): string[] {
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-ss',
+    startSec.toFixed(6),
+  ];
+
+  if (durationSec !== undefined) {
+    args.push('-t', Math.max(0, durationSec).toFixed(6));
+  }
+
+  args.push('-i', inputPath, '-map', '0:v:0');
+
+  const filters: string[] = [];
+  if (sampleFps !== undefined) {
+    filters.push(`fps=${sampleFps}`);
+  }
+  filters.push(
+    `scale=${SIMILARITY_WIDTH}:${SIMILARITY_HEIGHT}:flags=area`,
+    'format=gray',
+  );
+
+  args.push('-vf', filters.join(','));
+
+  if (maxFrames !== undefined) {
+    args.push('-frames:v', String(maxFrames));
+  }
+
+  args.push('-f', 'rawvideo', '-pix_fmt', 'gray', '-');
+  return args;
+}
+
+async function readNormalizedAnchorFrame(
+  inputPath: string,
+  anchorSec: number,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
+  const result = await runProcessBinary(
+    resolveFfmpegPath(),
+    buildNormalizedRawFrameArgs(
+      inputPath,
+      anchorSec,
+      undefined,
+      1,
+      undefined,
+    ),
+    { signal },
+  );
+
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || 'VISUAL_FRAME_SCAN_FAILED');
+  }
+
+  if (result.stdout.length < SIMILARITY_FRAME_BYTES) {
+    return null;
+  }
+
+  return result.stdout.subarray(0, SIMILARITY_FRAME_BYTES);
+}
+
+async function readNormalizedWindowFrames(
+  inputPath: string,
+  startSec: number,
+  durationSec: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const result = await runProcessBinary(
+    resolveFfmpegPath(),
+    buildNormalizedRawFrameArgs(
+      inputPath,
+      startSec,
+      durationSec,
+      undefined,
+      SIMILARITY_SAMPLE_FPS,
+    ),
+    { signal },
+  );
+
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || 'VISUAL_FRAME_SCAN_FAILED');
+  }
+
+  return result.stdout;
+}
+
+function getFrameFromBuffer(
+  buffer: Buffer,
+  index: number,
+): Uint8Array {
+  const offset = index * SIMILARITY_FRAME_BYTES;
+  return buffer.subarray(
+    offset,
+    offset + SIMILARITY_FRAME_BYTES,
+  );
+}
+
+function scanSimilarityChunkFromRight(
+  buffer: Buffer,
+  chunkStartSec: number,
+  chunkEndSec: number,
+  anchorFrame: Uint8Array,
+  threshold: number,
+): { boundarySec: number; allMatched: boolean } {
+  const frameCount = Math.floor(
+    buffer.length / SIMILARITY_FRAME_BYTES,
+  );
+  if (frameCount <= 0) {
+    return { boundarySec: chunkEndSec, allMatched: false };
+  }
+
+  const frameDurationSec = 1 / SIMILARITY_SAMPLE_FPS;
+  let boundarySec = chunkEndSec;
+
+  for (let index = frameCount - 1; index >= 0; index -= 1) {
+    const frame = getFrameFromBuffer(buffer, index);
+    if (
+      !isFrameWithinVisualThreshold(
+        anchorFrame,
+        frame,
+        threshold,
+      )
+    ) {
+      return { boundarySec, allMatched: false };
+    }
+
+    boundarySec = chunkStartSec + index * frameDurationSec;
+  }
+
+  return { boundarySec: chunkStartSec, allMatched: true };
+}
+
+function scanSimilarityChunkFromLeft(
+  buffer: Buffer,
+  chunkStartSec: number,
+  chunkEndSec: number,
+  anchorFrame: Uint8Array,
+  threshold: number,
+): { boundarySec: number; allMatched: boolean } {
+  const frameCount = Math.floor(
+    buffer.length / SIMILARITY_FRAME_BYTES,
+  );
+  if (frameCount <= 0) {
+    return { boundarySec: chunkStartSec, allMatched: false };
+  }
+
+  const frameDurationSec = 1 / SIMILARITY_SAMPLE_FPS;
+  let boundarySec = chunkStartSec;
+
+  for (let index = 0; index < frameCount; index += 1) {
+    const frame = getFrameFromBuffer(buffer, index);
+    if (
+      !isFrameWithinVisualThreshold(
+        anchorFrame,
+        frame,
+        threshold,
+      )
+    ) {
+      return { boundarySec, allMatched: false };
+    }
+
+    boundarySec = Math.min(
+      chunkEndSec,
+      chunkStartSec + (index + 1) * frameDurationSec,
+    );
+  }
+
+  return { boundarySec: chunkEndSec, allMatched: true };
+}
+
+async function locateSimilarityRange(
+  request: ExactFrameMatchRequest,
+  threshold: number,
+  signal?: AbortSignal,
+): Promise<LocatedVisualRange | null> {
+  const anchorSec = Math.max(
+    0,
+    Math.min(request.durationSec, request.currentTimeSec),
+  );
+
+  const anchorFrame = await readNormalizedAnchorFrame(
+    request.path,
+    anchorSec,
+    signal,
+  );
+
+  if (!anchorFrame) {
+    return null;
+  }
+
+  let startSec = anchorSec;
+  let endSec = anchorSec;
+
+  let leftCursorSec = anchorSec;
+  while (leftCursorSec > 0) {
+    if (signal?.aborted) {
+      throw new Error('PROCESS_ABORTED');
+    }
+
+    const chunkStartSec = Math.max(
+      0,
+      leftCursorSec - SIMILARITY_CHUNK_SEC,
+    );
+    const buffer = await readNormalizedWindowFrames(
+      request.path,
+      chunkStartSec,
+      leftCursorSec - chunkStartSec,
+      signal,
+    );
+
+    const scan = scanSimilarityChunkFromRight(
+      buffer,
+      chunkStartSec,
+      leftCursorSec,
+      anchorFrame,
+      threshold,
+    );
+    startSec = scan.boundarySec;
+
+    if (!scan.allMatched || chunkStartSec <= 0) {
+      break;
+    }
+
+    leftCursorSec = chunkStartSec;
+  }
+
+  let rightCursorSec = anchorSec;
+  while (rightCursorSec < request.durationSec) {
+    if (signal?.aborted) {
+      throw new Error('PROCESS_ABORTED');
+    }
+
+    const chunkEndSec = Math.min(
+      request.durationSec,
+      rightCursorSec + SIMILARITY_CHUNK_SEC,
+    );
+    const buffer = await readNormalizedWindowFrames(
+      request.path,
+      rightCursorSec,
+      chunkEndSec - rightCursorSec,
+      signal,
+    );
+
+    const scan = scanSimilarityChunkFromLeft(
+      buffer,
+      rightCursorSec,
+      chunkEndSec,
+      anchorFrame,
+      threshold,
+    );
+    endSec = scan.boundarySec;
+
+    if (!scan.allMatched || chunkEndSec >= request.durationSec) {
+      break;
+    }
+
+    rightCursorSec = chunkEndSec;
+  }
+
+  const minimumDurationSec = 1 / SIMILARITY_SAMPLE_FPS;
+  if (endSec <= startSec) {
+    endSec = Math.min(
+      request.durationSec,
+      startSec + minimumDurationSec,
+    );
+  }
+
+  return {
+    startSec,
+    endSec,
+  };
+}
+
+export async function locateExactFrameMatch(
+  request: ExactFrameMatchRequest,
+  signal?: AbortSignal,
+): Promise<ExactFrameMatch | null> {
+  const anchorSec = Math.max(
+    0,
+    Math.min(request.durationSec, request.currentTimeSec),
+  );
+  const threshold = getVisualChangeThreshold(
+    request.visualChangeLevel,
+  );
+
+  const range =
+    request.visualChangeLevel === 'exact'
+      ? await locateExactMd5Range(request, signal)
+      : await locateSimilarityRange(
+          request,
+          threshold,
+          signal,
+        );
+
+  if (!range) {
+    return null;
+  }
+
+  const startSec = Math.max(0, range.startSec);
+  const endSec = Math.min(request.durationSec, range.endSec);
 
   if (endSec <= startSec) {
     return null;
@@ -315,6 +694,8 @@ export async function locateExactFrameMatch(
     startSec,
     endSec,
     durationSec: endSec - startSec,
+    visualChangeLevel: request.visualChangeLevel,
+    maxNormalizedDifference: threshold,
     audioSubIntervals,
   };
 }

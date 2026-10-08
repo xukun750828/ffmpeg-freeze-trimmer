@@ -5,6 +5,7 @@ import type {
   ExactFrameMatch,
   ExactMatchStatus,
   FreezeInterval,
+  VisualChangeLevel,
 } from '../types/freeze';
 import { formatPreciseTime } from '../utils/time';
 
@@ -18,6 +19,7 @@ interface FreezePanelProps {
   maxIntervals: number;
   exactMatchStatus: ExactMatchStatus;
   exactFrameMatch: ExactFrameMatch | null;
+  visualChangeLevel: VisualChangeLevel;
   disabled: boolean;
   selectionDisabled: boolean;
   onOptionsChange: (options: DetectionOptions) => void;
@@ -25,6 +27,7 @@ interface FreezePanelProps {
   onMaxIntervalsChange: (count: number) => void;
   onStartDetection: () => void;
   onLocateExactFrameMatch: () => void;
+  onVisualChangeLevelChange: (level: VisualChangeLevel) => void;
   onPreviewRange: (startSec: number, endSec: number) => void;
   onPreview: (interval: FreezeInterval) => void;
   onToggleRemoval: (intervalId: string) => void;
@@ -41,6 +44,7 @@ export function FreezePanel({
   maxIntervals,
   exactMatchStatus,
   exactFrameMatch,
+  visualChangeLevel,
   disabled,
   selectionDisabled,
   onOptionsChange,
@@ -48,6 +52,7 @@ export function FreezePanel({
   onMaxIntervalsChange,
   onStartDetection,
   onLocateExactFrameMatch,
+  onVisualChangeLevelChange,
   onPreviewRange,
   onPreview,
   onToggleRemoval,
@@ -72,18 +77,18 @@ export function FreezePanel({
       ? '正在向当前时间点左右两侧精确定位…'
       : exactMatchStatus === 'ready'
         ? exactFrameMatch
-          ? `完全一致画面持续 ${exactFrameMatch.durationSec.toFixed(3)} 秒`
-          : '当前帧左右没有连续的完全一致画面'
+          ? `当前画面相似区间持续 ${exactFrameMatch.durationSec.toFixed(3)} 秒`
+          : '当前帧左右没有连续满足当前变化等级的画面'
         : exactMatchStatus === 'failed'
           ? '精确定位失败'
-          : '以当前帧为锚点，定位左右两侧解码后像素完全一致的连续区间';
+          : '以当前帧为锚点，按允许画面变化等级定位左右两侧连续相似区间';
 
   return (
     <section className="freeze-panel" aria-label="静止区间">
       <section className="exact-match-panel" aria-label="当前画面精确定位">
         <div className="panel-heading-row">
           <div>
-            <h2>当前画面精确定位</h2>
+            <h2>当前画面相似定位</h2>
             <p className="panel-summary">{exactSummary}</p>
           </div>
           <button
@@ -100,15 +105,36 @@ export function FreezePanel({
         </div>
 
         <p className="detection-note exact-anchor-note">
-          当前锚点：{formatPreciseTime(currentTimeSec)}。该功能使用严格像素一致判定，不使用“允许画面变化”阈值。
+          当前锚点：{formatPreciseTime(currentTimeSec)}。以下等级表示标准化灰度画面相对当前帧允许的平均像素差。
         </p>
+
+        <label className="exact-change-level">
+          <span>允许画面变化等级</span>
+          <select
+            aria-label="当前画面允许变化等级"
+            value={visualChangeLevel}
+            disabled={disabled || exactMatchStatus === 'locating'}
+            onChange={(event) =>
+              onVisualChangeLevelChange(
+                event.target.value as VisualChangeLevel,
+              )
+            }
+          >
+            <option value="exact">严格 · 0%</option>
+            <option value="very-low">极低 · 0.005%</option>
+            <option value="low">低 · 0.02%</option>
+            <option value="standard">标准 · 0.05%</option>
+            <option value="relaxed">宽松 · 0.08%</option>
+            <option value="very-relaxed">很宽松 · 0.10%</option>
+          </select>
+        </label>
 
         {exactFrameMatch && (
           <div className="exact-match-result">
             <button
               type="button"
               className="exact-parent-range"
-              aria-label="预览当前画面完全一致区间"
+              aria-label="预览当前画面相似区间"
               onClick={() =>
                 onPreviewRange(
                   exactFrameMatch.startSec,
@@ -117,7 +143,7 @@ export function FreezePanel({
               }
             >
               <span>
-                <strong>父区间 · 画面完全一致</strong>
+                <strong>父区间 · 当前画面相似</strong>
                 <small>
                   {formatPreciseTime(exactFrameMatch.startSec)} →{' '}
                   {formatPreciseTime(exactFrameMatch.endSec)}
