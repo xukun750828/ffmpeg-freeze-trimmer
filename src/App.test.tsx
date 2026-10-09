@@ -559,12 +559,37 @@ describe('selection, timeline, and export workflow', () => {
     await importVideoAndWait();
     await startDetectionAndWait();
 
-    fireEvent.click(screen.getByRole('button', { name: '时间轴静止区间 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '时间轴候选区间 2' }));
 
     const video = document.querySelector('video');
     expect(video).not.toBeNull();
     expect(video!.currentTime).toBeCloseTo(30.6, 3);
     expect(playSpy).toHaveBeenCalledOnce();
+  });
+
+  it('uses the unified custom controls and steps exactly one frame in either direction', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    expect(video).not.toHaveAttribute('controls');
+
+    video.currentTime = 10;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向右移动一帧' }),
+    );
+    expect(video.currentTime).toBeCloseTo(10 + 1 / 30, 5);
+    expect(pauseSpy).toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向左移动一帧' }),
+    );
+    expect(video.currentTime).toBeCloseTo(10, 5);
   });
 
   it('creates a selected manual removal interval with the In/Out buttons and exports it', async () => {
@@ -581,7 +606,7 @@ describe('selection, timeline, and export workflow', () => {
       screen.getByRole('button', { name: '设置人工删除区间起点' }),
     );
 
-    expect(screen.getByText('起点：')).toBeInTheDocument();
+    expect(screen.getByText(/起点：/)).toBeInTheDocument();
     expect(screen.getByText('00:10.000')).toBeInTheDocument();
 
     video.currentTime = 15.5;

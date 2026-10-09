@@ -155,8 +155,16 @@ select { width: 100%; padding: 7px 8px; }
 
 .manual-range-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.control-divider {
+  width: 1px;
+  height: 24px;
+  margin: 0 2px;
+  background: #343b46;
 }
 
 .manual-range-actions button {
@@ -332,37 +340,58 @@ select { width: 100%; padding: 7px 8px; }
 }
 
 .timeline-panel {
-  padding: 12px 16px 8px;
+  padding: 10px 16px 8px;
   border-top: 1px solid #222630;
   background: #11141a;
 }
 
 .timeline-track {
   position: relative;
-  height: 22px;
+  height: 24px;
   overflow: hidden;
-  border: 1px solid #2c323b;
-  border-radius: 6px;
+  border: 1px solid #343b46;
+  border-radius: 7px;
   background: #1b2028;
+  cursor: pointer;
+}
+
+.timeline-played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  pointer-events: none;
+  background: #303846;
 }
 
 .timeline-interval {
   position: absolute;
-  top: 2px;
-  bottom: 2px;
+  top: 3px;
+  bottom: 3px;
+  z-index: 2;
   min-width: 3px;
   padding: 0;
   border: 0;
   border-radius: 3px;
-  background: #6e7d95;
+  opacity: 0.95;
+}
+
+.timeline-interval.source-detected {
+  background: #718866;
+}
+
+.timeline-interval.source-similarity {
+  background: #5d7fb8;
+}
+
+.timeline-interval.source-manual {
+  background: #b1844c;
 }
 
 .timeline-interval.selected {
-  background: #a64f57;
+  background: #b5535d;
 }
 
 .timeline-interval.active {
-  outline: 2px solid #8fb0ff;
+  outline: 2px solid #f3f6ff;
   outline-offset: -1px;
 }
 
@@ -370,15 +399,29 @@ select { width: 100%; padding: 7px 8px; }
   position: absolute;
   top: 0;
   bottom: 0;
+  z-index: 3;
   width: 2px;
   pointer-events: none;
   background: #f8fafc;
   transform: translateX(-1px);
 }
 
+.timeline-playhead::before {
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f8fafc;
+  content: '';
+  transform: translateX(-50%);
+}
+
 .timeline-legend {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 7px 16px;
   margin-top: 7px;
   color: #8791a1;
   font-size: 11px;
@@ -394,11 +437,22 @@ select { width: 100%; padding: 7px 8px; }
   width: 9px;
   height: 9px;
   border-radius: 2px;
-  background: #6e7d95;
+}
+
+.legend-swatch.detected {
+  background: #718866;
+}
+
+.legend-swatch.similarity {
+  background: #5d7fb8;
+}
+
+.legend-swatch.manual {
+  background: #b1844c;
 }
 
 .legend-swatch.removal {
-  background: #a64f57;
+  background: #b5535d;
 }
 
 .selection-summary {
@@ -563,6 +617,8 @@ select { width: 100%; padding: 7px 8px; }
 
 .timeline-hover-zone {
   position: relative;
+  touch-action: none;
+  user-select: none;
 }
 
 .video-stage {

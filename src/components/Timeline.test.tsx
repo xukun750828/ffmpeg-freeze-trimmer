@@ -3,21 +3,28 @@ import { describe, expect, it, vi } from 'vitest';
 import { HoverPreviewProvider } from './HoverPreviewProvider';
 import { Timeline } from './Timeline';
 
-function renderTimeline(durationSec = 100) {
-  return render(
-    <HoverPreviewProvider
-      durationSec={durationSec}
-      previewSourceUrl="app-media://video/preview-token"
-    >
-      <Timeline
+function renderTimeline(
+  durationSec = 100,
+  onSeek = vi.fn(),
+) {
+  return {
+    onSeek,
+    ...render(
+      <HoverPreviewProvider
         durationSec={durationSec}
-        currentTimeSec={10}
-        intervals={[]}
-        activeIntervalId={null}
-        onPreview={vi.fn()}
-      />
-    </HoverPreviewProvider>,
-  );
+        previewSourceUrl="app-media://video/preview-token"
+      >
+        <Timeline
+          durationSec={durationSec}
+          currentTimeSec={10}
+          intervals={[]}
+          activeIntervalId={null}
+          onPreview={vi.fn()}
+          onSeek={onSeek}
+        />
+      </HoverPreviewProvider>,
+    ),
+  };
 }
 
 describe('Timeline hover preview', () => {
@@ -127,5 +134,38 @@ describe('Timeline hover preview', () => {
     // Once the previous seek completes, jump straight to the latest target.
     fireEvent.seeked(previewVideo);
     expect(previewVideo.currentTime).toBeCloseTo(70, 3);
+  });
+
+  it('seeks the main video position by clicking or dragging the unified timeline', () => {
+    const onSeek = vi.fn();
+    renderTimeline(100, onSeek);
+
+    const hoverZone = screen.getByTestId('timeline-hover-zone');
+    vi.spyOn(hoverZone, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 200,
+      left: 0,
+      top: 200,
+      right: 1000,
+      bottom: 224,
+      width: 1000,
+      height: 24,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.pointerDown(hoverZone, {
+      pointerId: 1,
+      button: 0,
+      clientX: 250,
+    });
+    expect(onSeek).toHaveBeenLastCalledWith(25);
+
+    fireEvent.pointerMove(hoverZone, {
+      pointerId: 1,
+      clientX: 760,
+    });
+    expect(onSeek).toHaveBeenLastCalledWith(76);
+
+    fireEvent.pointerUp(hoverZone, { pointerId: 1 });
   });
 });

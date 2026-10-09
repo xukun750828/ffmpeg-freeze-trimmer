@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import type { FreezeInterval } from '../types/freeze';
 import { useHoverPreview } from './HoverPreviewProvider';
 
@@ -7,6 +8,7 @@ interface TimelineProps {
   intervals: FreezeInterval[];
   activeIntervalId: string | null;
   onPreview: (interval: FreezeInterval) => void;
+  onSeek: (timeSec: number) => void;
 }
 
 export function Timeline({
@@ -15,8 +17,10 @@ export function Timeline({
   intervals,
   activeIntervalId,
   onPreview,
+  onSeek,
 }: TimelineProps) {
   const { requestPreview, hidePreview } = useHoverPreview();
+  const draggingRef = useRef(false);
 
   if (durationSec <= 0) return null;
 
@@ -24,6 +28,19 @@ export function Timeline({
     100,
     Math.max(0, (currentTimeSec / durationSec) * 100),
   );
+
+  function timeFromPointer(
+    event: React.PointerEvent<HTMLDivElement>,
+  ): number | null {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+
+    const relativeX = Math.min(
+      rect.width,
+      Math.max(0, event.clientX - rect.left),
+    );
+    return (relativeX / rect.width) * durationSec;
+  }
 
   function handleTimelineMouseMove(
     event: React.MouseEvent<HTMLDivElement>,
@@ -46,22 +63,62 @@ export function Timeline({
     });
   }
 
+  function handlePointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+  ) {
+    if (event.button !== 0) return;
+    const timeSec = timeFromPointer(event);
+    if (timeSec === null) return;
+
+    draggingRef.current = true;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    onSeek(timeSec);
+  }
+
+  function handlePointerMove(
+    event: React.PointerEvent<HTMLDivElement>,
+  ) {
+    if (!draggingRef.current) return;
+    const timeSec = timeFromPointer(event);
+    if (timeSec !== null) onSeek(timeSec);
+  }
+
+  function stopDragging() {
+    draggingRef.current = false;
+  }
+
   return (
     <section className="timeline-panel" aria-label="视频时间轴">
       <div
         className="timeline-hover-zone"
         data-testid="timeline-hover-zone"
+        role="slider"
+        aria-label="视频进度"
+        aria-valuemin={0}
+        aria-valuemax={durationSec}
+        aria-valuenow={Math.min(durationSec, Math.max(0, currentTimeSec))}
+        tabIndex={0}
         onMouseMove={handleTimelineMouseMove}
         onMouseLeave={hidePreview}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={stopDragging}
+        onPointerCancel={stopDragging}
       >
         <div className="timeline-track">
+          <div
+            className="timeline-played"
+            style={{ width: `${playheadPct}%` }}
+          />
           {intervals.map((interval, index) => {
             const left = (interval.startSec / durationSec) * 100;
             const width =
               ((interval.endSec - interval.startSec) / durationSec) *
               100;
+            const source = interval.source ?? 'detected';
             const classNames = [
               'timeline-interval',
+              `source-${source}`,
               interval.selectedForRemoval ? 'selected' : '',
               interval.id === activeIntervalId ? 'active' : '',
             ]
@@ -73,11 +130,12 @@ export function Timeline({
                 key={interval.id}
                 type="button"
                 className={classNames}
-                aria-label={`时间轴静止区间 ${index + 1}`}
+                aria-label={`时间轴候选区间 ${index + 1}`}
                 style={{
                   left: `${left}%`,
                   width: `${Math.max(width, 0.35)}%`,
                 }}
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => onPreview(interval)}
               />
             );
@@ -90,7 +148,9 @@ export function Timeline({
       </div>
 
       <div className="timeline-legend">
-        <span><i className="legend-swatch candidate" /> 静止候选</span>
+        <span><i className="legend-swatch detected" /> 检测候选</span>
+        <span><i className="legend-swatch similarity" /> 相似候选</span>
+        <span><i className="legend-swatch manual" /> 人工候选</span>
         <span><i className="legend-swatch removal" /> 待删除</span>
       </div>
     </section>

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FreezePanel } from './components/FreezePanel';
 import { HoverPreviewProvider } from './components/HoverPreviewProvider';
-import { NativeTimelineHoverPreview } from './components/NativeTimelineHoverPreview';
 import { Timeline } from './components/Timeline';
 import type {
   AnalysisStatus,
@@ -63,6 +62,7 @@ export default function App() {
   const [selection, setSelection] = useState<OpenVideoResult | null>(null);
   const [media, setMedia] = useState<MediaInfo | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [status, setStatus] = useState<'idle' | 'opening' | 'ready' | 'failed'>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -227,6 +227,7 @@ export default function App() {
       setSelection(selected);
       setMedia(probed);
       setCurrentTimeSec(0);
+      setIsPlaying(false);
       setIntervals([]);
       setActiveIntervalId(null);
       setPreviewEndSec(null);
@@ -385,6 +386,62 @@ export default function App() {
       event.currentTarget.pause();
       setPreviewEndSec(null);
     }
+  }
+
+  function handleTogglePlayback() {
+    const video = videoRef.current;
+    if (!video || !media) return;
+
+    setPreviewEndSec(null);
+    if (video.paused) {
+      void video.play().catch(() => {
+        setError('无法开始播放当前视频。');
+      });
+    } else {
+      video.pause();
+    }
+  }
+
+  function handleSeek(timeSec: number) {
+    const video = videoRef.current;
+    if (!video || !media) return;
+
+    const targetSec = Math.max(0, Math.min(media.durationSec, timeSec));
+    setPreviewEndSec(null);
+    setActiveIntervalId(null);
+    setExactFrameMatch(null);
+    setExactMatchStatus('idle');
+    setCurrentTimeSec(targetSec);
+    video.currentTime = targetSec;
+  }
+
+  function handleStepFrame(direction: -1 | 1) {
+    const video = videoRef.current;
+    if (!video || !media || media.fps <= 0) return;
+
+    video.pause();
+    setPreviewEndSec(null);
+
+    const currentSec = Math.max(
+      0,
+      Math.min(media.durationSec, video.currentTime),
+    );
+    const currentFrame = Math.round(currentSec * media.fps);
+    const maxFrame = Math.max(0, Math.floor(media.durationSec * media.fps));
+    const targetFrame = Math.min(
+      maxFrame,
+      Math.max(0, currentFrame + direction),
+    );
+    const targetSec = Math.min(
+      media.durationSec,
+      targetFrame / media.fps,
+    );
+
+    setActiveIntervalId(null);
+    setExactFrameMatch(null);
+    setExactMatchStatus('idle');
+    setCurrentTimeSec(targetSec);
+    video.currentTime = targetSec;
   }
 
   function getCurrentPlaybackTimeSec(): number | null {
@@ -648,39 +705,64 @@ export default function App() {
               durationSec={media.durationSec}
               previewSourceUrl={selection.sourceUrl}
             >
-              <NativeTimelineHoverPreview
-                durationSec={media.durationSec}
-              >
+              <div className="video-stage">
                 <video
                   ref={videoRef}
                   className="video-player"
                   src={selection.sourceUrl}
-                  controls
                   onTimeUpdate={handleVideoTimeUpdate}
                   onSeeking={handleVideoSeeking}
                   onSeeked={handleVideoSeeked}
                   onLoadedMetadata={(event) =>
                     setCurrentTimeSec(event.currentTarget.currentTime)
                   }
-                  onPlay={() =>
+                  onPlay={() => {
+                    setIsPlaying(true);
                     setError((current) =>
-                      current === '无法开始播放当前预览区间。'
+                      current === '无法开始播放当前预览区间。' ||
+                      current === '无法开始播放当前视频。'
                         ? null
                         : current,
-                    )
-                  }
+                    );
+                  }}
+                  onPause={() => setIsPlaying(false)}
+                  onEnded={() => setIsPlaying(false)}
+                  onDoubleClick={handleTogglePlayback}
                 />
-              </NativeTimelineHoverPreview>
-              <div className="player-status">
-                <span>{formatTime(currentTimeSec)} / {formatTime(media.durationSec)}</span>
-                <span>{mediaSummary}</span>
               </div>
 
               <div
                 className="manual-range-toolbar"
-                aria-label="人工指定删除区间"
+                aria-label="播放器控制与人工指定删除区间"
               >
-                <div className="manual-range-actions">
+                <div className="manual-range-actions playback-actions">
+                  <button
+                    type="button"
+                    aria-label={isPlaying ? '暂停视频' : '播放视频'}
+                    onClick={handleTogglePlayback}
+                    disabled={exportStatus === 'exporting'}
+                  >
+                    {isPlaying ? '❚❚ 暂停' : '▶ 播放'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="向左移动一帧"
+                    onClick={() => handleStepFrame(-1)}
+                    disabled={exportStatus === 'exporting'}
+                    title="向前一帧"
+                  >
+                    ◀ 1帧
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="向右移动一帧"
+                    onClick={() => handleStepFrame(1)}
+                    disabled={exportStatus === 'exporting'}
+                    title="向后一帧"
+                  >
+                    1帧 ▶
+                  </button>
+                  <span className="control-divider" aria-hidden="true" />
                   <button
                     type="button"
                     aria-label="设置人工删除区间起点"
@@ -701,17 +783,15 @@ export default function App() {
                   </button>
                 </div>
                 <div className="manual-range-status" aria-live="polite">
+                  <span>
+                    {formatPreciseTime(currentTimeSec)} / {formatPreciseTime(media.durationSec)}
+                  </span>
                   {manualRangeStartSec === null ? (
-                    <span>在播放器定位后设置起点；设置终点后自动加入待删除。</span>
+                    <span>{mediaSummary}</span>
                   ) : (
-                    <>
-                      <span>
-                        起点：<strong>{formatPreciseTime(manualRangeStartSec)}</strong>
-                      </span>
-                      <span>
-                        当前：{formatPreciseTime(currentTimeSec)} · 按 O 设置终点
-                      </span>
-                    </>
+                    <span>
+                      起点：<strong>{formatPreciseTime(manualRangeStartSec)}</strong> · 按 O 设置终点
+                    </span>
                   )}
                 </div>
               </div>
@@ -722,6 +802,7 @@ export default function App() {
                 intervals={intervals}
                 activeIntervalId={activeIntervalId}
                 onPreview={handlePreview}
+                onSeek={handleSeek}
               />
 
               <div className="selection-summary" aria-label="删除统计">
