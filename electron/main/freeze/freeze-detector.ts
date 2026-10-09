@@ -36,10 +36,9 @@ export interface RefinementWindow {
 interface CandidateRefinement {
   startSec?: number;
   endSec?: number;
-  confirmed: boolean;
 }
 
-interface RefinedBoundaryAssignment {
+export interface RefinedBoundaryAssignment {
   candidateIndex: number;
   kind: BoundaryKind;
   value: number;
@@ -372,38 +371,20 @@ async function refineWindow(
   return matchRefinementBoundaries(global, window.boundaries);
 }
 
-async function refineCandidatesByMergedWindows(
-  inputPath: string,
-  mediaDurationSec: number,
-  candidates: FreezeInterval[],
-  options: DetectionOptions,
-  signal?: AbortSignal,
-): Promise<FreezeInterval[]> {
-  const refinements: CandidateRefinement[] = candidates.map(() => ({
-    confirmed: false,
-  }));
-  const windows = buildRefinementWindows(
-    candidates,
-    mediaDurationSec,
-    options,
-  );
+export function applyRefinementAssignments(
+  candidates: readonly FreezeInterval[],
+  assignments: readonly RefinedBoundaryAssignment[],
+): FreezeInterval[] {
+  const refinements: CandidateRefinement[] = candidates.map(() => ({}));
 
-  const windowResults = await mapWithConcurrency(
-    windows,
-    REFINEMENT_CONCURRENCY,
-    (window) => refineWindow(inputPath, window, options, signal),
-  );
+  for (const assignment of assignments) {
+    const refinement = refinements[assignment.candidateIndex];
+    if (!refinement) continue;
 
-  for (const assignments of windowResults) {
-    for (const assignment of assignments) {
-      const refinement = refinements[assignment.candidateIndex];
-      refinement.confirmed = true;
-
-      if (assignment.kind === 'start') {
-        refinement.startSec = assignment.value;
-      } else {
-        refinement.endSec = assignment.value;
-      }
+    if (assignment.kind === 'start') {
+      refinement.startSec = assignment.value;
+    } else {
+      refinement.endSec = assignment.value;
     }
   }
 
@@ -411,14 +392,12 @@ async function refineCandidatesByMergedWindows(
 
   candidates.forEach((candidate, index) => {
     const refinement = refinements[index];
-    if (!refinement.confirmed) {
-      return;
-    }
-
-    const startSec = refinement.startSec ?? candidate.startSec;
-    const endSec = refinement.endSec ?? candidate.endSec;
+    const startSec = refinement.startSec;
+    const endSec = refinement.endSec;
 
     if (
+      startSec === undefined ||
+      endSec === undefined ||
       !Number.isFinite(startSec) ||
       !Number.isFinite(endSec) ||
       endSec <= startSec
@@ -435,6 +414,31 @@ async function refineCandidatesByMergedWindows(
   });
 
   return refined;
+}
+
+async function refineCandidatesByMergedWindows(
+  inputPath: string,
+  mediaDurationSec: number,
+  candidates: FreezeInterval[],
+  options: DetectionOptions,
+  signal?: AbortSignal,
+): Promise<FreezeInterval[]> {
+  const windows = buildRefinementWindows(
+    candidates,
+    mediaDurationSec,
+    options,
+  );
+
+  const windowResults = await mapWithConcurrency(
+    windows,
+    REFINEMENT_CONCURRENCY,
+    (window) => refineWindow(inputPath, window, options, signal),
+  );
+
+  return applyRefinementAssignments(
+    candidates,
+    windowResults.flat(),
+  );
 }
 
 export function mergeOverlappingFreezeIntervals(

@@ -45,18 +45,34 @@ export function parseSilenceIntervals(
 export function filterFreezesBySilence(
   freezes: readonly FreezeInterval[],
   silences: readonly SilenceInterval[],
-  minOverlapSec: number,
+  minDurationSec: number,
 ): FreezeInterval[] {
-  return freezes.filter((freeze) =>
-    silences.some((silence) => {
-      const overlap = Math.max(
-        0,
-        Math.min(freeze.endSec, silence.endSec) -
-          Math.max(freeze.startSec, silence.startSec),
-      );
-      return overlap >= Math.min(minOverlapSec, freeze.durationSec);
-    }),
-  );
+  const intersections: FreezeInterval[] = [];
+
+  for (const freeze of freezes) {
+    let segmentIndex = 1;
+
+    for (const silence of silences) {
+      const startSec = Math.max(freeze.startSec, silence.startSec);
+      const endSec = Math.min(freeze.endSec, silence.endSec);
+      const durationSec = endSec - startSec;
+
+      if (durationSec + 1e-6 < minDurationSec) {
+        continue;
+      }
+
+      intersections.push({
+        ...freeze,
+        id: `${freeze.id}-silence-${segmentIndex}`,
+        startSec,
+        endSec,
+        durationSec,
+      });
+      segmentIndex += 1;
+    }
+  }
+
+  return intersections;
 }
 
 export async function detectSilenceInRange(

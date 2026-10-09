@@ -267,11 +267,11 @@ describe('App media import and manual directed freeze detection', () => {
       },
     });
     expect(
-      screen.getByText(/无背景声音.*静音条件/),
+      screen.getByText(/无背景声音.*画面静止.*音频静音/),
     ).toBeInTheDocument();
   });
 
-  it('previews a detected interval with lead and tail context', async () => {
+  it('previews a detected interval from its exact start with tail context', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
@@ -284,7 +284,7 @@ describe('App media import and manual directed freeze detection', () => {
 
     const video = document.querySelector('video');
     expect(video).not.toBeNull();
-    expect(video!.currentTime).toBeCloseTo(11.9, 3);
+    expect(video!.currentTime).toBeCloseTo(12.4, 3);
     expect(playSpy).toHaveBeenCalledOnce();
 
     const activeRow = screen

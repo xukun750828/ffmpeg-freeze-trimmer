@@ -332,7 +332,7 @@ export function FreezePanel({
 
         {!options.hasBackgroundSound && (
           <p className="detection-note">
-            “无背景声音”模式：有音轨时会同时要求静止区间满足静音条件；无音轨视频只按画面检测。
+            “无背景声音”模式：有音轨时只返回“画面静止 ∩ 音频静音”的连续重叠区间；无音轨视频只按画面检测。
           </p>
         )}
       </div>

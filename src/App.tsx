@@ -314,11 +314,12 @@ export default function App() {
     startSec: number,
     endSec: number,
     activeId: string | null = null,
+    leadSec: number = PREVIEW_LEAD_SEC,
   ) {
     const video = videoRef.current;
     if (!video || !media) return;
 
-    const previewStart = Math.max(0, startSec - PREVIEW_LEAD_SEC);
+    const previewStart = Math.max(0, startSec - leadSec);
     const previewEnd = Math.min(media.durationSec, endSec + PREVIEW_TAIL_SEC);
 
     setError(null);
@@ -356,7 +357,7 @@ export default function App() {
   }
 
   function handlePreview(interval: FreezeInterval) {
-    handlePreviewRange(interval.startSec, interval.endSec, interval.id);
+    handlePreviewRange(interval.startSec, interval.endSec, interval.id, 0);
   }
 
   function handleVideoSeeking() {

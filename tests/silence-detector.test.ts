@@ -73,7 +73,7 @@ describe('silence detector helpers', () => {
     ]);
   });
 
-  it('keeps only freeze intervals with enough silence overlap', () => {
+  it('returns only the visual-freeze and silence intersection', () => {
     const freezes = [
       {
         id: 'freeze-0001',
@@ -100,6 +100,42 @@ describe('silence detector helpers', () => {
       2,
     );
 
-    expect(result.map((interval) => interval.id)).toEqual(['freeze-0001']);
+    expect(result).toEqual([
+      {
+        id: 'freeze-0001-silence-1',
+        startSec: 10,
+        endSec: 13.5,
+        durationSec: 3.5,
+        selectedForRemoval: false,
+      },
+    ]);
+  });
+
+  it('splits one visual freeze into multiple qualifying silent intersections', () => {
+    const result = filterFreezesBySilence(
+      [
+        {
+          id: 'freeze-0001',
+          startSec: 10,
+          endSec: 20,
+          durationSec: 10,
+          selectedForRemoval: false,
+        },
+      ],
+      [
+        { startSec: 11, endSec: 14 },
+        { startSec: 16, endSec: 20 },
+      ],
+      2,
+    );
+
+    expect(result.map(({ startSec, endSec, durationSec }) => ({
+      startSec,
+      endSec,
+      durationSec,
+    }))).toEqual([
+      { startSec: 11, endSec: 14, durationSec: 3 },
+      { startSec: 16, endSec: 20, durationSec: 4 },
+    ]);
   });
 });

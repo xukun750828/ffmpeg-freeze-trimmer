@@ -351,6 +351,37 @@ describe('real FFmpeg pipeline', () => {
   );
 
   it(
+    'trims no-background-sound results to the silent part of a visual freeze',
+    async () => {
+      const inputPath = path.join(tempDir, 'freeze-with-partial-silence.mp4');
+      await createExactMatchAudioFixture(inputPath);
+      const source = await probeMedia(inputPath);
+
+      const result = await detectFreezesDirected({
+        path: inputPath,
+        durationSec: source.durationSec,
+        currentTimeSec: 0,
+        direction: 'forward',
+        maxIntervals: 1,
+        hasAudio: true,
+        options: {
+          noise: 0.003,
+          minDurationSec: 1.5,
+          hasBackgroundSound: false,
+        },
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].startSec).toBeGreaterThanOrEqual(3.8);
+      expect(result[0].startSec).toBeLessThan(4.3);
+      expect(result[0].endSec).toBeGreaterThan(5.7);
+      expect(result[0].endSec).toBeLessThan(6.3);
+      expect(result[0].durationSec).toBeLessThan(2.5);
+    },
+    30_000,
+  );
+
+  it(
     'uses the fast scan path on long media and refines freeze boundaries',
     async () => {
       const inputPath = path.join(tempDir, 'long-fast-scan.mp4');

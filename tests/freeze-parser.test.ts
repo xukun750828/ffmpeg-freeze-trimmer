@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { FreezeParser } from '../electron/main/freeze/freeze-parser';
 import {
+  applyRefinementAssignments,
   buildFastFreezeDetectArgs,
   buildFreezeDetectArgs,
   buildRefineFreezeDetectArgs,
@@ -187,6 +188,40 @@ describe('freeze detection argument builders', () => {
       kind: 'start',
       value: 10,
     });
+  });
+
+  it('accepts a refined candidate only when both start and end boundaries are confirmed', () => {
+    const candidates = [
+      {
+        id: 'freeze-0001',
+        startSec: 10,
+        endSec: 20,
+        durationSec: 10,
+        selectedForRemoval: false,
+      },
+      {
+        id: 'freeze-0002',
+        startSec: 30,
+        endSec: 40,
+        durationSec: 10,
+        selectedForRemoval: false,
+      },
+    ];
+
+    const result = applyRefinementAssignments(candidates, [
+      { candidateIndex: 0, kind: 'start', value: 10.1 },
+      { candidateIndex: 0, kind: 'end', value: 19.9 },
+      { candidateIndex: 1, kind: 'end', value: 39.8 },
+    ]);
+
+    expect(result).toEqual([
+      {
+        ...candidates[0],
+        startSec: 10.1,
+        endSec: 19.9,
+        durationSec: 9.799999999999999,
+      },
+    ]);
   });
 
   it('merges only overlapping refined intervals and keeps adjacent intervals separate', () => {
