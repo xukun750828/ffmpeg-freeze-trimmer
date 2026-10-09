@@ -35,83 +35,150 @@ export function mergeTimeRanges(
   return merged;
 }
 
+interface NavigationRegion {
+  kind: 'interval' | 'gap';
+  startSec: number;
+  endSec: number;
+}
+
+function buildNavigationRegions(
+  ranges: readonly TimeRangeLike[],
+  durationSec: number,
+  frameDurationSec: number,
+  epsilonSec: number,
+): NavigationRegion[] {
+  const merged = mergeTimeRanges(ranges, epsilonSec);
+  if (merged.length === 0) return [];
+
+  const regions: NavigationRegion[] = [];
+
+  merged.forEach((range, index) => {
+    regions.push({
+      kind: 'interval',
+      startSec: range.startSec,
+      endSec: range.endSec,
+    });
+
+    const next = merged[index + 1];
+    if (!next) return;
+
+    const gapStartSec = Math.min(
+      durationSec,
+      range.endSec + frameDurationSec,
+    );
+    const gapEndSec = Math.max(
+      0,
+      next.startSec - frameDurationSec,
+    );
+
+    if (gapEndSec + epsilonSec >= gapStartSec) {
+      regions.push({
+        kind: 'gap',
+        startSec: gapStartSec,
+        endSec: gapEndSec,
+      });
+    }
+  });
+
+  return regions;
+}
+
 export function findIntervalBoundaryJumpTarget(
   ranges: readonly TimeRangeLike[],
   currentSec: number,
   direction: -1 | 1,
+  durationSec: number,
+  frameDurationSec: number,
   epsilonSec = 0.001,
 ): number | null {
-  const merged = mergeTimeRanges(ranges, epsilonSec);
-  if (merged.length === 0 || !Number.isFinite(currentSec)) {
+  if (
+    !Number.isFinite(currentSec) ||
+    !Number.isFinite(durationSec) ||
+    durationSec < 0
+  ) {
     return null;
   }
+
+  const safeFrameDurationSec =
+    Number.isFinite(frameDurationSec) && frameDurationSec > 0
+      ? frameDurationSec
+      : 0;
+
+  const merged = mergeTimeRanges(ranges, epsilonSec);
+  if (merged.length === 0) {
+    return direction < 0 ? 0 : durationSec;
+  }
+
+  const regions = buildNavigationRegions(
+    merged,
+    durationSec,
+    safeFrameDurationSec,
+    epsilonSec,
+  );
 
   const isNear = (value: number, target: number) =>
     Math.abs(value - target) <= epsilonSec;
 
-  for (let index = 0; index < merged.length; index += 1) {
-    const range = merged[index];
-    const atStart = isNear(currentSec, range.startSec);
-    const atEnd = isNear(currentSec, range.endSec);
+  for (let index = 0; index < regions.length; index += 1) {
+    const region = regions[index];
+    const atStart = isNear(currentSec, region.startSec);
+    const atEnd = isNear(currentSec, region.endSec);
     const inside =
-      currentSec > range.startSec + epsilonSec &&
-      currentSec < range.endSec - epsilonSec;
+      currentSec > region.startSec + epsilonSec &&
+      currentSec < region.endSec - epsilonSec;
 
     if (direction < 0) {
       if (inside || atEnd) {
-        return range.startSec;
+        return region.startSec;
       }
 
       if (atStart) {
-        return index > 0 ? merged[index - 1].startSec : null;
+        return index > 0 ? regions[index - 1].startSec : null;
       }
     } else {
       if (inside || atStart) {
-        return range.endSec;
+        return region.endSec;
       }
 
       if (atEnd) {
-        return index + 1 < merged.length ? merged[index + 1].endSec : null;
+        return index + 1 < regions.length ? regions[index + 1].endSec : null;
       }
     }
   }
 
-  if (direction < 0) {
-    for (let index = merged.length - 2; index >= 0; index -= 1) {
-      const previous = merged[index];
-      const next = merged[index + 1];
-
-      if (
-        currentSec > previous.endSec + epsilonSec &&
-        currentSec < next.startSec - epsilonSec
-      ) {
-        return previous.endSec;
-      }
-    }
-
-    const last = merged.at(-1);
-    if (last && currentSec > last.endSec + epsilonSec) {
-      return last.startSec;
-    }
-
-    return null;
+  const firstInterval = merged[0];
+  if (currentSec < firstInterval.startSec - epsilonSec) {
+    return direction < 0 ? 0 : firstInterval.endSec;
   }
 
-  for (let index = 1; index < merged.length; index += 1) {
-    const previous = merged[index - 1];
-    const next = merged[index];
+  const lastInterval = merged.at(-1);
+  if (lastInterval && currentSec > lastInterval.endSec + epsilonSec) {
+    return direction < 0 ? lastInterval.startSec : durationSec;
+  }
+
+  for (let index = 0; index < merged.length - 1; index += 1) {
+    const previous = merged[index];
+    const next = merged[index + 1];
 
     if (
       currentSec > previous.endSec + epsilonSec &&
       currentSec < next.startSec - epsilonSec
     ) {
-      return next.startSec;
-    }
-  }
+      const gapStartSec = previous.endSec + safeFrameDurationSec;
+      const gapEndSec = next.startSec - safeFrameDurationSec;
 
-  const first = merged[0];
-  if (currentSec < first.startSec - epsilonSec) {
-    return first.endSec;
+      if (direction < 0) {
+        return Math.max(
+          0,
+          Math.min(durationSec, gapStartSec),
+        );
+      }
+
+      return Math.max(
+        0,
+        Math.min(durationSec, gapEndSec),
+      );
+    }
   }
 
   return null;

@@ -596,7 +596,7 @@ export default function App() {
 
   function handleJumpIntervalBoundary(direction: -1 | 1) {
     const video = videoRef.current;
-    if (!video || !media || visibleIntervals.length === 0) return;
+    if (!video || !media) return;
 
     const currentSec = getCurrentPlaybackTimeSec();
     if (currentSec === null) return;
@@ -610,6 +610,8 @@ export default function App() {
       visibleIntervals,
       currentSec,
       direction,
+      media.durationSec,
+      media.fps > 0 ? 1 / media.fps : 0,
       epsilonSec,
     );
 
@@ -1016,11 +1018,8 @@ export default function App() {
                     type="button"
                     aria-label="向左跳转到区间开始"
                     onClick={() => handleJumpIntervalBoundary(-1)}
-                    disabled={
-                      exportStatus === 'exporting' ||
-                      visibleIntervals.length === 0
-                    }
-                    title="区间内：跳到当前/上一区间开始；间隔内：先到间隔开始，再到前一区间开始"
+                    disabled={exportStatus === 'exporting'}
+                    title="左跳：当前区域起点；间隔起点=前一区间结束后的下一帧；无区间时跳到时间轴开始"
                   >
                     ◀ 区间
                   </button>
@@ -1028,11 +1027,8 @@ export default function App() {
                     type="button"
                     aria-label="向右跳转到区间结束"
                     onClick={() => handleJumpIntervalBoundary(1)}
-                    disabled={
-                      exportStatus === 'exporting' ||
-                      visibleIntervals.length === 0
-                    }
-                    title="区间内：跳到当前/下一区间结束；间隔内：先到间隔结束，再到后一区间结束"
+                    disabled={exportStatus === 'exporting'}
+                    title="右跳：当前区域终点；间隔终点=后一区间开始前的上一帧；无区间时跳到时间轴结束"
                   >
                     区间 ▶
                   </button>

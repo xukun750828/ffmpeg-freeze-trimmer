@@ -664,7 +664,7 @@ describe('selection, timeline, and export workflow', () => {
     expect(playSpy).not.toHaveBeenCalled();
   });
 
-  it('jumps to current then adjacent interval boundaries with repeated left and right clicks', async () => {
+  it('navigates interval and gap regions with frame-adjusted gap boundaries', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
@@ -672,6 +672,7 @@ describe('selection, timeline, and export workflow', () => {
     await importVideoAndWait();
     await startDetectionAndWait();
 
+    const frameSec = 1 / 30;
     const video = document.querySelector('video')!;
     const jumpLeft = screen.getByRole('button', {
       name: '向左跳转到区间开始',
@@ -684,43 +685,68 @@ describe('selection, timeline, and export workflow', () => {
     fireEvent.timeUpdate(video);
 
     fireEvent.click(jumpLeft);
-    expect(video.currentTime).toBeCloseTo(31.1, 3);
+    expect(video.currentTime).toBeCloseTo(31.1, 5);
 
     fireEvent.click(jumpLeft);
-    expect(video.currentTime).toBeCloseTo(12.4, 3);
+    expect(video.currentTime).toBeCloseTo(18.2 + frameSec, 5);
 
     fireEvent.click(jumpLeft);
-    expect(video.currentTime).toBeCloseTo(12.4, 3);
+    expect(video.currentTime).toBeCloseTo(12.4, 5);
 
     video.currentTime = 15;
     fireEvent.timeUpdate(video);
 
     fireEvent.click(jumpRight);
-    expect(video.currentTime).toBeCloseTo(18.2, 3);
+    expect(video.currentTime).toBeCloseTo(18.2, 5);
 
     fireEvent.click(jumpRight);
-    expect(video.currentTime).toBeCloseTo(38.5, 3);
+    expect(video.currentTime).toBeCloseTo(31.1 - frameSec, 5);
 
     fireEvent.click(jumpRight);
-    expect(video.currentTime).toBeCloseTo(38.5, 3);
+    expect(video.currentTime).toBeCloseTo(38.5, 5);
 
     video.currentTime = 25;
     fireEvent.timeUpdate(video);
 
     fireEvent.click(jumpLeft);
-    expect(video.currentTime).toBeCloseTo(18.2, 3);
+    expect(video.currentTime).toBeCloseTo(18.2 + frameSec, 5);
 
     fireEvent.click(jumpLeft);
-    expect(video.currentTime).toBeCloseTo(12.4, 3);
+    expect(video.currentTime).toBeCloseTo(12.4, 5);
 
     video.currentTime = 25;
     fireEvent.timeUpdate(video);
 
     fireEvent.click(jumpRight);
-    expect(video.currentTime).toBeCloseTo(31.1, 3);
+    expect(video.currentTime).toBeCloseTo(31.1 - frameSec, 5);
 
     fireEvent.click(jumpRight);
-    expect(video.currentTime).toBeCloseTo(38.5, 3);
+    expect(video.currentTime).toBeCloseTo(38.5, 5);
+  });
+
+  it('jumps to timeline start or end when the timeline has no visible intervals', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 50;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向左跳转到区间开始' }),
+    );
+    expect(video.currentTime).toBeCloseTo(0, 6);
+
+    video.currentTime = 50;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向右跳转到区间结束' }),
+    );
+    expect(video.currentTime).toBeCloseTo(125.5, 6);
   });
 
   it('uses only currently filtered intervals for interval-boundary jumps', async () => {
