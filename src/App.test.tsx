@@ -703,6 +703,24 @@ describe('selection, timeline, and export workflow', () => {
 
     fireEvent.click(jumpRight);
     expect(video.currentTime).toBeCloseTo(38.5, 3);
+
+    video.currentTime = 25;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(18.2, 3);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(12.4, 3);
+
+    video.currentTime = 25;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(31.1, 3);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(38.5, 3);
   });
 
   it('uses only currently filtered intervals for interval-boundary jumps', async () => {

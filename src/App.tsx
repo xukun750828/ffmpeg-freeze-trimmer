@@ -17,6 +17,7 @@ import type {
 import type { MediaInfo, OpenVideoResult } from './types/media';
 import { getUserFriendlyError } from './utils/error-message';
 import {
+  findIntervalBoundaryJumpTarget,
   measureTimeRangeUnion,
   mergeTimeRanges,
 } from './utils/time-ranges';
@@ -605,25 +606,14 @@ export default function App() {
       media.fps > 0 ? 0.5 / media.fps : MIN_INTERVAL_JUMP_EPSILON_SEC,
     );
 
-    const boundaries =
-      direction < 0
-        ? visibleIntervals
-            .map((interval) => interval.startSec)
-            .sort((a, b) => a - b)
-        : visibleIntervals
-            .map((interval) => interval.endSec)
-            .sort((a, b) => a - b);
+    const targetSec = findIntervalBoundaryJumpTarget(
+      visibleIntervals,
+      currentSec,
+      direction,
+      epsilonSec,
+    );
 
-    const targetSec =
-      direction < 0
-        ? [...boundaries]
-            .reverse()
-            .find((boundarySec) => boundarySec < currentSec - epsilonSec)
-        : boundaries.find(
-            (boundarySec) => boundarySec > currentSec + epsilonSec,
-          );
-
-    if (targetSec === undefined) return;
+    if (targetSec === null) return;
 
     video.pause();
     handleSeek(targetSec);
@@ -1030,7 +1020,7 @@ export default function App() {
                       exportStatus === 'exporting' ||
                       visibleIntervals.length === 0
                     }
-                    title="第一次跳到当前区间开始；再次点击跳到上一个区间开始"
+                    title="区间内：跳到当前/上一区间开始；间隔内：先到间隔开始，再到前一区间开始"
                   >
                     ◀ 区间
                   </button>
@@ -1042,7 +1032,7 @@ export default function App() {
                       exportStatus === 'exporting' ||
                       visibleIntervals.length === 0
                     }
-                    title="第一次跳到当前区间结束；再次点击跳到下一个区间结束"
+                    title="区间内：跳到当前/下一区间结束；间隔内：先到间隔结束，再到后一区间结束"
                   >
                     区间 ▶
                   </button>
