@@ -7,6 +7,36 @@ export interface FreezeInterval {
   durationSec: number;
   selectedForRemoval: boolean;
   source?: FreezeIntervalSource;
+  searchRunId?: string;
+  searchRunLabel?: string;
+  searchAnchorSec?: number;
+  searchDirection?: DetectionDirection;
+  searchHasBackgroundSound?: boolean;
+}
+
+export interface SearchRun {
+  id: string;
+  source: FreezeIntervalSource;
+  label: string;
+  createdAt: number;
+  resultCount: number;
+  anchorSec?: number;
+  direction?: DetectionDirection;
+  hasBackgroundSound?: boolean;
+}
+
+export type IntervalSourceFilter = 'all' | FreezeIntervalSource;
+export type IntervalAudioFilter = 'all' | 'visual-only' | 'silence-required';
+
+export interface IntervalFilterState {
+  source: IntervalSourceFilter;
+  runId: string;
+  minDurationSec: number;
+  maxDurationSec: number | null;
+  timeStartSec: number;
+  timeEndSec: number | null;
+  audio: IntervalAudioFilter;
+  selectedOnly: boolean;
 }
 
 export type DetectionDirection = 'forward' | 'backward';

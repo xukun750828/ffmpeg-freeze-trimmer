@@ -5,6 +5,9 @@ import type {
   ExactFrameMatch,
   ExactMatchStatus,
   FreezeInterval,
+  FreezeIntervalSource,
+  IntervalFilterState,
+  SearchRun,
   VisualChangeLevel,
 } from '../types/freeze';
 import { formatPreciseTime } from '../utils/time';
@@ -12,6 +15,11 @@ import { formatPreciseTime } from '../utils/time';
 interface FreezePanelProps {
   status: AnalysisStatus;
   intervals: FreezeInterval[];
+  totalIntervalCount: number;
+  sourceCounts: Record<FreezeIntervalSource, number>;
+  searchRuns: SearchRun[];
+  filters: IntervalFilterState;
+  lastDetectionCount: number;
   activeIntervalId: string | null;
   options: DetectionOptions;
   currentTimeSec: number;
@@ -35,11 +43,20 @@ interface FreezePanelProps {
   onToggleRemoval: (intervalId: string) => void;
   onSelectAll: (selected: boolean) => void;
   onDeleteSelected: () => void;
+  onClearVisibleRemoval: () => void;
+  onDeleteInterval: (intervalId: string) => void;
+  onFiltersChange: (filters: IntervalFilterState) => void;
+  onResetFilters: () => void;
 }
 
 export function FreezePanel({
   status,
   intervals,
+  totalIntervalCount,
+  sourceCounts,
+  searchRuns,
+  filters,
+  lastDetectionCount,
   activeIntervalId,
   options,
   currentTimeSec,
@@ -63,23 +80,23 @@ export function FreezePanel({
   onToggleRemoval,
   onSelectAll,
   onDeleteSelected,
+  onClearVisibleRemoval,
+  onDeleteInterval,
+  onFiltersChange,
+  onResetFilters,
 }: FreezePanelProps) {
   const selectedCount = intervals.filter(
     (interval) => interval.selectedForRemoval,
   ).length;
   const allSelected =
     intervals.length > 0 && selectedCount === intervals.length;
-  const detectedCount = intervals.filter(
-    (interval) => interval.source === 'detected',
-  ).length;
-
   const summary =
     status === 'detecting'
       ? '正在从当前时间点检测…'
       : status === 'ready'
-        ? detectedCount > 0
-          ? `发现 ${detectedCount} 个静止区间`
-          : '当前方向未发现满足条件的静止区间'
+        ? lastDetectionCount > 0
+          ? `本次发现 ${lastDetectionCount} 个静止区间，已追加到历史结果`
+          : '本次查找未发现满足条件的静止区间'
         : status === 'failed'
           ? '检测失败'
           : '设置参数后点击“启动检测”';
@@ -337,85 +354,313 @@ export function FreezePanel({
         )}
       </div>
 
-      {intervals.length > 0 && (
-        <>
-          <div className="candidate-list-heading">
-            <h3>删除候选区间</h3>
-            <span>人工指定、相似定位与方向检测结果统一在这里管理</span>
-          </div>
-          <div className="selection-toolbar">
-            <label>
-              <input
-                aria-label="全选静止区间"
-                type="checkbox"
-                checked={allSelected}
-                disabled={selectionDisabled}
-                onChange={(event) => onSelectAll(event.target.checked)}
-              />
-              <span>全选</span>
-            </label>
-            <button
-              type="button"
-              className="candidate-delete-button"
-              onClick={onDeleteSelected}
-              disabled={selectionDisabled || selectedCount === 0}
-              title="从候选列表移除已勾选区间，不会立即修改源视频"
-            >
-              删除所选区间
-            </button>
-            <span>已选择 {selectedCount} / {intervals.length}</span>
-          </div>
-        </>
-      )}
+      <div className="freeze-section-divider" />
 
-      <div className="freeze-list" aria-live="polite">
-        {intervals.map((interval, index) => {
-          const active = interval.id === activeIntervalId;
-          return (
-            <article
-              className={`freeze-row${active ? ' active' : ''}${interval.selectedForRemoval ? ' selected' : ''}`}
-              key={interval.id}
-              data-active={active ? 'true' : 'false'}
+      <section className="interval-management-panel" aria-label="区间管理与筛选">
+        <div className="candidate-list-heading interval-management-heading">
+          <div>
+            <h3>区间管理</h3>
+            <span>
+              多次查找结果持续保留；筛选同时作用于列表、时间轴和批量操作
+            </span>
+          </div>
+          <button
+            type="button"
+            className="filter-reset-button"
+            onClick={onResetFilters}
+            disabled={selectionDisabled}
+          >
+            重置筛选
+          </button>
+        </div>
+
+        <div className="source-filter-tabs" role="tablist" aria-label="区间来源筛选">
+          {([
+            ['all', '全部区间', totalIntervalCount],
+            ['detected', '方向检测', sourceCounts.detected],
+            ['similarity', '相似定位', sourceCounts.similarity],
+            ['manual', '人工指定', sourceCounts.manual],
+          ] as const).map(([source, label, count]) => (
+            <button
+              key={source}
+              type="button"
+              role="tab"
+              aria-selected={filters.source === source}
+              className={filters.source === source ? 'active' : ''}
+              onClick={() =>
+                onFiltersChange({
+                  ...filters,
+                  source,
+                  runId: 'all',
+                })
+              }
             >
-              <label className="freeze-check">
-                <input
-                  aria-label={`选择删除静止区间 ${index + 1}`}
-                  type="checkbox"
-                  checked={interval.selectedForRemoval}
-                  disabled={selectionDisabled}
-                  onChange={() => onToggleRemoval(interval.id)}
-                />
-              </label>
-              <button
-                className="freeze-preview-button"
-                type="button"
-                aria-label={`预览静止区间 ${index + 1}`}
-                onClick={() => onPreview(interval)}
-              >
-                <span className="freeze-times">
-                  <span className="candidate-source-row">
-                    <span
-                      className={`candidate-source-badge ${interval.source ?? 'detected'}`}
-                    >
-                      {interval.source === 'similarity'
-                        ? '相似定位'
-                        : interval.source === 'manual'
-                          ? '人工指定'
-                          : '方向检测'}
+              {label} <span>{count}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="interval-filter-grid">
+          <label>
+            <span>查找批次</span>
+            <select
+              aria-label="查找批次"
+              value={filters.runId}
+              onChange={(event) =>
+                onFiltersChange({
+                  ...filters,
+                  runId: event.target.value,
+                })
+              }
+            >
+              <option value="all">全部批次</option>
+              {searchRuns.map((run) => (
+                <option key={run.id} value={run.id}>
+                  {run.label} · {formatPreciseTime(run.anchorSec ?? 0)} ·{' '}
+                  {run.source === 'detected'
+                    ? run.direction === 'backward'
+                      ? '向前'
+                      : '向后'
+                    : '当前帧'} ·{' '}
+                  {run.resultCount} 段
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>最小时长</span>
+            <div className="inline-input compact-filter-input">
+              <input
+                aria-label="筛选最小时长"
+                type="number"
+                min="0"
+                step="0.5"
+                value={filters.minDurationSec}
+                onChange={(event) =>
+                  onFiltersChange({
+                    ...filters,
+                    minDurationSec: Math.max(0, Number(event.target.value) || 0),
+                  })
+                }
+              />
+              <span>秒</span>
+            </div>
+          </label>
+
+          <label>
+            <span>最大时长</span>
+            <div className="inline-input compact-filter-input">
+              <input
+                aria-label="筛选最大时长"
+                type="number"
+                min="0"
+                step="0.5"
+                placeholder="不限"
+                value={filters.maxDurationSec ?? ''}
+                onChange={(event) =>
+                  onFiltersChange({
+                    ...filters,
+                    maxDurationSec:
+                      event.target.value === ''
+                        ? null
+                        : Math.max(0, Number(event.target.value)),
+                  })
+                }
+              />
+              <span>秒</span>
+            </div>
+          </label>
+
+          <label>
+            <span>检测音频条件</span>
+            <select
+              aria-label="筛选检测音频条件"
+              value={filters.audio}
+              onChange={(event) =>
+                onFiltersChange({
+                  ...filters,
+                  audio: event.target.value as IntervalFilterState['audio'],
+                })
+              }
+            >
+              <option value="all">全部</option>
+              <option value="visual-only">允许背景声音</option>
+              <option value="silence-required">要求无背景声音</option>
+            </select>
+          </label>
+
+          <label>
+            <span>时间范围起点</span>
+            <div className="inline-input compact-filter-input">
+              <input
+                aria-label="筛选时间范围起点"
+                type="number"
+                min="0"
+                step="1"
+                value={filters.timeStartSec}
+                onChange={(event) =>
+                  onFiltersChange({
+                    ...filters,
+                    timeStartSec: Math.max(0, Number(event.target.value) || 0),
+                  })
+                }
+              />
+              <span>秒</span>
+            </div>
+          </label>
+
+          <label>
+            <span>时间范围终点</span>
+            <div className="inline-input compact-filter-input">
+              <input
+                aria-label="筛选时间范围终点"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="视频结尾"
+                value={filters.timeEndSec ?? ''}
+                onChange={(event) =>
+                  onFiltersChange({
+                    ...filters,
+                    timeEndSec:
+                      event.target.value === ''
+                        ? null
+                        : Math.max(0, Number(event.target.value)),
+                  })
+                }
+              />
+              <span>秒</span>
+            </div>
+          </label>
+
+          <label className="filter-checkbox">
+            <input
+              aria-label="仅显示已勾选区间"
+              type="checkbox"
+              checked={filters.selectedOnly}
+              onChange={(event) =>
+                onFiltersChange({
+                  ...filters,
+                  selectedOnly: event.target.checked,
+                })
+              }
+            />
+            <span>仅显示已勾选</span>
+          </label>
+        </div>
+
+        <div className="search-history-summary">
+          <span>累计查找 {searchRuns.length} 次</span>
+          <span>当前显示 {intervals.length} / {totalIntervalCount} 段</span>
+        </div>
+
+        <div className="selection-toolbar batch-toolbar">
+          <label>
+            <input
+              aria-label="全选静止区间"
+              type="checkbox"
+              checked={allSelected}
+              disabled={selectionDisabled || intervals.length === 0}
+              onChange={(event) => onSelectAll(event.target.checked)}
+            />
+            <span>全选当前结果</span>
+          </label>
+          <button
+            type="button"
+            className="candidate-delete-button"
+            onClick={onDeleteSelected}
+            disabled={selectionDisabled || selectedCount === 0}
+            title="只从当前筛选结果中移除已勾选区间，不会立即修改源视频"
+          >
+            删除所选区间
+          </button>
+          <button
+            type="button"
+            className="candidate-keep-button"
+            onClick={onClearVisibleRemoval}
+            disabled={selectionDisabled || selectedCount === 0}
+          >
+            设为不删除
+          </button>
+          <span>已选择 {selectedCount} / {intervals.length}</span>
+        </div>
+
+        <div className="freeze-list" aria-live="polite">
+          {intervals.length === 0 ? (
+            <div className="candidate-empty-state">
+              当前筛选条件下没有区间。
+            </div>
+          ) : (
+            intervals.map((interval, index) => {
+              const active = interval.id === activeIntervalId;
+              return (
+                <article
+                  className={`freeze-row${active ? ' active' : ''}${interval.selectedForRemoval ? ' selected' : ''}`}
+                  key={interval.id}
+                  data-active={active ? 'true' : 'false'}
+                >
+                  <label className="freeze-check">
+                    <input
+                      aria-label={`选择删除静止区间 ${index + 1}`}
+                      type="checkbox"
+                      checked={interval.selectedForRemoval}
+                      disabled={selectionDisabled}
+                      onChange={() => onToggleRemoval(interval.id)}
+                    />
+                  </label>
+                  <button
+                    className="freeze-preview-button"
+                    type="button"
+                    aria-label={`预览静止区间 ${index + 1}`}
+                    onClick={() => onPreview(interval)}
+                  >
+                    <span className="freeze-times">
+                      <span className="candidate-source-row">
+                        <span
+                          className={`candidate-source-badge ${interval.source ?? 'detected'}`}
+                        >
+                          {interval.source === 'similarity'
+                            ? '相似定位'
+                            : interval.source === 'manual'
+                              ? '人工指定'
+                              : '方向检测'}
+                        </span>
+                        <strong>
+                          {formatPreciseTime(interval.startSec)} →{' '}
+                          {formatPreciseTime(interval.endSec)}
+                        </strong>
+                      </span>
+                      <span className="candidate-meta-row">
+                        <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
+                        {interval.searchRunLabel && (
+                          <small>
+                            {interval.searchRunLabel}
+                            {interval.searchAnchorSec !== undefined
+                              ? ` · 锚点 ${formatPreciseTime(interval.searchAnchorSec)}`
+                              : ''}
+                          </small>
+                        )}
+                      </span>
                     </span>
-                    <strong>
-                      {formatPreciseTime(interval.startSec)} →{' '}
-                      {formatPreciseTime(interval.endSec)}
-                    </strong>
-                  </span>
-                  <span>持续 {interval.durationSec.toFixed(3)} 秒</span>
-                </span>
-                <span className="preview-label">▶</span>
-              </button>
-            </article>
-          );
-        })}
-      </div>
+                    <span className="preview-label">▶</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="freeze-row-delete"
+                    aria-label={`删除候选区间 ${index + 1}`}
+                    title="从候选列表移除此区间"
+                    disabled={selectionDisabled}
+                    onClick={() => onDeleteInterval(interval.id)}
+                  >
+                    ×
+                  </button>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </section>
     </section>
   );
 }

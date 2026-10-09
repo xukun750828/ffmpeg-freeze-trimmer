@@ -104,7 +104,9 @@ async function importVideoAndWait() {
 async function startDetectionAndWait() {
   fireEvent.click(screen.getByRole('button', { name: '启动检测' }));
   await waitFor(() => {
-    expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+    expect(
+      screen.getByText(/本次发现 2 个静止区间.*已追加到历史结果/),
+    ).toBeInTheDocument();
   });
 }
 
@@ -186,7 +188,7 @@ describe('App media import and manual directed freeze detection', () => {
     );
     expect(within(exactPanel).getAllByText('有背景声音')).toHaveLength(2);
     expect(within(exactPanel).getByText('无背景声音')).toBeInTheDocument();
-    expect(screen.getByText('00:40.000 → 00:48.000')).toBeInTheDocument();
+    expect(screen.getAllByText('00:40.000 → 00:48.000')).toHaveLength(2);
 
     pauseSpy.mockClear();
     playSpy.mockClear();
@@ -457,9 +459,15 @@ describe('selection, timeline, and export workflow', () => {
     expect(screen.getByText('已选择 0 / 1')).toBeInTheDocument();
     expect(screen.getByText('已选 0 段')).toBeInTheDocument();
     expect(screen.getByText('删除 00:00.000')).toBeInTheDocument();
-    expect(screen.getAllByText('方向检测')).toHaveLength(1);
-    expect(screen.queryByText('人工指定')).not.toBeInTheDocument();
-    expect(screen.queryByText('相似定位')).not.toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.candidate-source-badge.detected'),
+    ).toHaveLength(1);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.manual'),
+    ).toHaveLength(0);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.similarity'),
+    ).toHaveLength(0);
     expect(deleteButton).toBeDisabled();
   });
 
@@ -488,7 +496,9 @@ describe('selection, timeline, and export workflow', () => {
       }),
     );
 
-    expect(screen.getByText('相似定位')).toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.candidate-source-badge.similarity'),
+    ).toHaveLength(1);
     expect(screen.getByText('已选 1 段')).toBeInTheDocument();
     expect(screen.getByText('删除 00:08.000')).toBeInTheDocument();
     expect(screen.getByText('输出约 01:57.500')).toBeInTheDocument();
@@ -535,10 +545,16 @@ describe('selection, timeline, and export workflow', () => {
 
     await startDetectionAndWait();
 
-    expect(screen.getByText('发现 2 个静止区间')).toBeInTheDocument();
+    expect(
+      screen.getByText(/本次发现 2 个静止区间.*已追加到历史结果/),
+    ).toBeInTheDocument();
     expect(screen.getByText('已选择 1 / 3')).toBeInTheDocument();
-    expect(screen.getAllByText('方向检测')).toHaveLength(2);
-    expect(screen.getAllByText('相似定位')).toHaveLength(1);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.detected'),
+    ).toHaveLength(2);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.similarity'),
+    ).toHaveLength(1);
     expect(screen.getByText('已选 1 段')).toBeInTheDocument();
   });
 
@@ -584,7 +600,7 @@ describe('selection, timeline, and export workflow', () => {
     );
 
     await startDetectionAndWait();
-    fireEvent.click(screen.getByLabelText('选择删除静止区间 2'));
+    fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
 
     expect(screen.getByText('已选 2 段')).toBeInTheDocument();
     expect(screen.getByText('删除 00:07.600')).toBeInTheDocument();
@@ -696,7 +712,9 @@ describe('selection, timeline, and export workflow', () => {
       screen.getByRole('button', { name: '设置人工删除区间终点' }),
     );
 
-    expect(screen.getByText('人工指定')).toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.candidate-source-badge.manual'),
+    ).toHaveLength(1);
     expect(screen.getByText('00:10.000 → 00:15.500')).toBeInTheDocument();
     expect(screen.getByText('已选 1 段')).toBeInTheDocument();
     expect(screen.getByText('删除 00:05.500')).toBeInTheDocument();
@@ -733,15 +751,167 @@ describe('selection, timeline, and export workflow', () => {
     fireEvent.timeUpdate(video);
     fireEvent.keyDown(window, { key: 'o' });
 
-    expect(screen.getByText('人工指定')).toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.candidate-source-badge.manual'),
+    ).toHaveLength(1);
     expect(screen.getByText('00:22.250 → 00:27.750')).toBeInTheDocument();
     expect(screen.getByText('已选 1 段')).toBeInTheDocument();
 
     await startDetectionAndWait();
 
     expect(screen.getByText('已选择 1 / 3')).toBeInTheDocument();
-    expect(screen.getByText('人工指定')).toBeInTheDocument();
-    expect(screen.getAllByText('方向检测')).toHaveLength(2);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.manual'),
+    ).toHaveLength(1);
+    expect(
+      document.querySelectorAll('.candidate-source-badge.detected'),
+    ).toHaveLength(2);
+  });
+
+  it('keeps multiple directed search runs and filters list and timeline by run', async () => {
+    const desktopApi = createDesktopApi();
+    desktopApi.detectFreezes
+      .mockResolvedValueOnce([
+        {
+          id: 'freeze-a1',
+          startSec: 12.4,
+          endSec: 18.2,
+          durationSec: 5.8,
+          selectedForRemoval: false,
+        },
+        {
+          id: 'freeze-a2',
+          startSec: 31.1,
+          endSec: 38.5,
+          durationSec: 7.4,
+          selectedForRemoval: false,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'freeze-b1',
+          startSec: 70,
+          endSec: 73,
+          durationSec: 3,
+          selectedForRemoval: false,
+        },
+      ]);
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+    await startDetectionAndWait();
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 60;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(screen.getByRole('button', { name: '启动检测' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/本次发现 1 个静止区间.*已追加到历史结果/),
+      ).toBeInTheDocument();
+    });
+
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(3);
+    expect(document.querySelectorAll('.timeline-interval')).toHaveLength(3);
+    expect(screen.getByText('累计查找 2 次')).toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: '方向检测 3' }),
+    ).toHaveAttribute('aria-selected', 'false');
+
+    const runSelect = screen.getByLabelText('查找批次');
+    const options = within(runSelect).getAllByRole('option');
+    expect(options).toHaveLength(3);
+    expect(options[1]).toHaveTextContent('方向检测 #1');
+    expect(options[2]).toHaveTextContent('方向检测 #2');
+
+    fireEvent.change(runSelect, { target: { value: options[1].getAttribute('value')! } });
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(2);
+    expect(document.querySelectorAll('.timeline-interval')).toHaveLength(2);
+    expect(screen.getByText('当前显示 2 / 3 段')).toBeInTheDocument();
+
+    fireEvent.change(runSelect, { target: { value: options[2].getAttribute('value')! } });
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(1);
+    expect(document.querySelectorAll('.timeline-interval')).toHaveLength(1);
+    expect(screen.getByText('01:10.000 → 01:13.000')).toBeInTheDocument();
+
+    fireEvent.change(runSelect, { target: { value: 'all' } });
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(3);
+  });
+
+  it('filters historical results by source and audio condition and batches only visible results', async () => {
+    const desktopApi = createDesktopApi();
+    desktopApi.detectFreezes
+      .mockResolvedValueOnce([
+        {
+          id: 'freeze-a1',
+          startSec: 12.4,
+          endSec: 18.2,
+          durationSec: 5.8,
+          selectedForRemoval: false,
+        },
+        {
+          id: 'freeze-a2',
+          startSec: 31.1,
+          endSec: 38.5,
+          durationSec: 7.4,
+          selectedForRemoval: false,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'freeze-b1',
+          startSec: 70,
+          endSec: 73,
+          durationSec: 3,
+          selectedForRemoval: false,
+        },
+      ]);
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+    await startDetectionAndWait();
+
+    fireEvent.click(screen.getByLabelText('有背景声音'));
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 60;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(screen.getByRole('button', { name: '启动检测' }));
+    await waitFor(() => {
+      expect(
+        screen.getByText(/本次发现 1 个静止区间.*已追加到历史结果/),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText('筛选检测音频条件'), {
+      target: { value: 'silence-required' },
+    });
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(1);
+    expect(document.querySelectorAll('.timeline-interval')).toHaveLength(1);
+
+    fireEvent.click(screen.getByLabelText('全选静止区间'));
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('筛选检测音频条件'), {
+      target: { value: 'visual-only' },
+    });
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(2);
+    expect(screen.getByText('已选择 0 / 2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('全选静止区间'));
+    expect(screen.getByText('已选 3 段')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '删除所选区间' }));
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(0);
+    expect(screen.getByText('当前显示 0 / 1 段')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '重置筛选' }));
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(1);
+    expect(screen.getByText('当前显示 1 / 1 段')).toBeInTheDocument();
+    expect(screen.getByText('已选 1 段')).toBeInTheDocument();
   });
 
   it('starts an MP4 export with the selected removal ranges and supports cancellation', async () => {

@@ -9,6 +9,9 @@ import type {
   ExactFrameMatch,
   ExactMatchStatus,
   FreezeInterval,
+  FreezeIntervalSource,
+  IntervalFilterState,
+  SearchRun,
   VisualChangeLevel,
 } from './types/freeze';
 import type { MediaInfo, OpenVideoResult } from './types/media';
@@ -28,6 +31,21 @@ const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
 const PREVIEW_LEAD_SEC = 0.5;
 const PREVIEW_TAIL_SEC = 0.5;
 const SIMILARITY_RANGE_MATCH_EPSILON_SEC = 0.05;
+
+function createDefaultIntervalFilters(
+  durationSec: number | null = null,
+): IntervalFilterState {
+  return {
+    source: 'all',
+    runId: 'all',
+    minDurationSec: 0,
+    maxDurationSec: null,
+    timeStartSec: 0,
+    timeEndSec: durationSec,
+    audio: 'all',
+    selectedOnly: false,
+  };
+}
 
 function buildSimilarityIntervalId(match: ExactFrameMatch): string {
   return `similarity-${Math.round(match.startSec * 1000)}-${Math.round(
@@ -59,6 +77,8 @@ type ExportUiStatus = 'idle' | 'exporting' | 'completed' | 'cancelled' | 'failed
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewSeekInProgressRef = useRef(false);
+  const directedRunCounterRef = useRef(0);
+  const similarityRunCounterRef = useRef(0);
   const [selection, setSelection] = useState<OpenVideoResult | null>(null);
   const [media, setMedia] = useState<MediaInfo | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -68,6 +88,11 @@ export default function App() {
 
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>('idle');
   const [intervals, setIntervals] = useState<FreezeInterval[]>([]);
+  const [searchRuns, setSearchRuns] = useState<SearchRun[]>([]);
+  const [lastDetectionCount, setLastDetectionCount] = useState(0);
+  const [intervalFilters, setIntervalFilters] = useState<IntervalFilterState>(
+    () => createDefaultIntervalFilters(),
+  );
   const [activeIntervalId, setActiveIntervalId] = useState<string | null>(null);
   const [previewEndSec, setPreviewEndSec] = useState<number | null>(null);
   const [detectionOptions, setDetectionOptions] = useState<DetectionOptions>(
@@ -80,6 +105,8 @@ export default function App() {
     useState<ExactMatchStatus>('idle');
   const [exactFrameMatch, setExactFrameMatch] =
     useState<ExactFrameMatch | null>(null);
+  const [exactMatchIntervalId, setExactMatchIntervalId] =
+    useState<string | null>(null);
   const [visualChangeLevel, setVisualChangeLevel] =
     useState<VisualChangeLevel>('standard');
   const [manualRangeStartSec, setManualRangeStartSec] = useState<number | null>(
@@ -134,6 +161,81 @@ export default function App() {
     return `${media.width}×${media.height} · ${media.fps.toFixed(2)} fps · ${media.videoCodec.toUpperCase()}`;
   }, [media]);
 
+  const visibleIntervals = useMemo(() => {
+    const timeEndSec =
+      intervalFilters.timeEndSec ?? media?.durationSec ?? Number.POSITIVE_INFINITY;
+    const maxDurationSec =
+      intervalFilters.maxDurationSec ?? Number.POSITIVE_INFINITY;
+
+    return intervals
+      .filter((interval) => {
+        const source = interval.source ?? 'detected';
+
+        if (
+          intervalFilters.source !== 'all' &&
+          source !== intervalFilters.source
+        ) {
+          return false;
+        }
+
+        if (
+          intervalFilters.runId !== 'all' &&
+          interval.searchRunId !== intervalFilters.runId
+        ) {
+          return false;
+        }
+
+        if (
+          interval.durationSec < intervalFilters.minDurationSec ||
+          interval.durationSec > maxDurationSec
+        ) {
+          return false;
+        }
+
+        if (
+          interval.endSec < intervalFilters.timeStartSec ||
+          interval.startSec > timeEndSec
+        ) {
+          return false;
+        }
+
+        if (
+          intervalFilters.audio === 'visual-only' &&
+          interval.searchHasBackgroundSound !== true
+        ) {
+          return false;
+        }
+
+        if (
+          intervalFilters.audio === 'silence-required' &&
+          interval.searchHasBackgroundSound !== false
+        ) {
+          return false;
+        }
+
+        if (intervalFilters.selectedOnly && !interval.selectedForRemoval) {
+          return false;
+        }
+
+        return true;
+      })
+      .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+  }, [intervals, intervalFilters, media?.durationSec]);
+
+  const sourceCounts = useMemo(() => {
+    const counts: Record<FreezeIntervalSource, number> = {
+      detected: 0,
+      similarity: 0,
+      manual: 0,
+    };
+
+    for (const interval of intervals) {
+      counts[interval.source ?? 'detected'] += 1;
+    }
+
+    return counts;
+  }, [intervals]);
+
   const selectedIntervals = useMemo(
     () => intervals.filter((interval) => interval.selectedForRemoval),
     [intervals],
@@ -141,12 +243,20 @@ export default function App() {
 
   const exactMatchRemovalInterval = useMemo(() => {
     if (!exactFrameMatch) return null;
+
+    if (exactMatchIntervalId) {
+      const currentRunInterval =
+        intervals.find((interval) => interval.id === exactMatchIntervalId) ??
+        null;
+      if (currentRunInterval) return currentRunInterval;
+    }
+
     return (
       intervals.find((interval) =>
         isSameSimilarityRange(interval, exactFrameMatch),
       ) ?? null
     );
-  }, [exactFrameMatch, intervals]);
+  }, [exactFrameMatch, exactMatchIntervalId, intervals]);
 
   const exactMatchSelectedForRemoval =
     exactMatchRemovalInterval?.selectedForRemoval ?? false;
@@ -177,13 +287,15 @@ export default function App() {
       Math.min(media.durationSec, video?.currentTime ?? currentTimeSec),
     );
 
+    const runNumber = directedRunCounterRef.current + 1;
+    directedRunCounterRef.current = runNumber;
+    const runId = `directed-${runNumber}-${Math.round(detectionStartSec * 1000)}`;
+    const runLabel = `方向检测 #${runNumber}`;
+
     video?.pause();
     setCurrentTimeSec(detectionStartSec);
     setError(null);
     setAnalysisStatus('detecting');
-    setIntervals((current) =>
-      current.filter((interval) => interval.source !== 'detected'),
-    );
     setActiveIntervalId(null);
     setPreviewEndSec(null);
 
@@ -197,19 +309,37 @@ export default function App() {
         hasAudio: media.hasAudio,
         options: detectionOptions,
       });
+
+      const run: SearchRun = {
+        id: runId,
+        source: 'detected',
+        label: runLabel,
+        createdAt: Date.now(),
+        resultCount: detected.length,
+        anchorSec: detectionStartSec,
+        direction: detectionDirection,
+        hasBackgroundSound: detectionOptions.hasBackgroundSound,
+      };
+
+      setSearchRuns((current) => [...current, run]);
       setIntervals((current) => [
-        ...current.filter((interval) => interval.source !== 'detected'),
+        ...current,
         ...detected.map((interval) => ({
           ...interval,
+          id: `${runId}:${interval.id}`,
           source: 'detected' as const,
           selectedForRemoval: false,
+          searchRunId: runId,
+          searchRunLabel: runLabel,
+          searchAnchorSec: detectionStartSec,
+          searchDirection: detectionDirection,
+          searchHasBackgroundSound: detectionOptions.hasBackgroundSound,
         })),
       ]);
+      setLastDetectionCount(detected.length);
       setAnalysisStatus('ready');
     } catch (caught) {
-      setIntervals((current) =>
-        current.filter((interval) => interval.source !== 'detected'),
-      );
+      setLastDetectionCount(0);
       setAnalysisStatus('failed');
       setError(getUserFriendlyError(caught, '静止画面检测失败'));
     }
@@ -228,7 +358,12 @@ export default function App() {
       setMedia(probed);
       setCurrentTimeSec(0);
       setIsPlaying(false);
+      directedRunCounterRef.current = 0;
+      similarityRunCounterRef.current = 0;
       setIntervals([]);
+      setSearchRuns([]);
+      setLastDetectionCount(0);
+      setIntervalFilters(createDefaultIntervalFilters(probed.durationSec));
       setActiveIntervalId(null);
       setPreviewEndSec(null);
       setExportStatus('idle');
@@ -236,6 +371,7 @@ export default function App() {
       setAnalysisStatus('idle');
       setExactMatchStatus('idle');
       setExactFrameMatch(null);
+      setExactMatchIntervalId(null);
       setManualRangeStartSec(null);
       setStatus('ready');
     } catch (caught) {
@@ -290,6 +426,7 @@ export default function App() {
     setCurrentTimeSec(anchorSec);
     setError(null);
     setExactFrameMatch(null);
+    setExactMatchIntervalId(null);
     setExactMatchStatus('locating');
 
     try {
@@ -302,9 +439,46 @@ export default function App() {
       });
 
       setExactFrameMatch(match);
+
+      if (match) {
+        const runNumber = similarityRunCounterRef.current + 1;
+        similarityRunCounterRef.current = runNumber;
+        const runId = `similarity-${runNumber}-${Math.round(anchorSec * 1000)}`;
+        const runLabel = `相似定位 #${runNumber}`;
+        const intervalId = `${runId}:range`;
+
+        setSearchRuns((current) => [
+          ...current,
+          {
+            id: runId,
+            source: 'similarity',
+            label: runLabel,
+            createdAt: Date.now(),
+            resultCount: 1,
+            anchorSec,
+          },
+        ]);
+        setIntervals((current) => [
+          ...current,
+          {
+            id: intervalId,
+            startSec: match.startSec,
+            endSec: match.endSec,
+            durationSec: match.durationSec,
+            selectedForRemoval: false,
+            source: 'similarity',
+            searchRunId: runId,
+            searchRunLabel: runLabel,
+            searchAnchorSec: anchorSec,
+          },
+        ]);
+        setExactMatchIntervalId(intervalId);
+      }
+
       setExactMatchStatus('ready');
     } catch (caught) {
       setExactFrameMatch(null);
+      setExactMatchIntervalId(null);
       setExactMatchStatus('failed');
       setError(getUserFriendlyError(caught, '当前画面精确定位失败'));
     }
@@ -368,6 +542,7 @@ export default function App() {
     setPreviewEndSec(null);
     setActiveIntervalId(null);
     setExactFrameMatch(null);
+    setExactMatchIntervalId(null);
     setExactMatchStatus('idle');
     setError((current) =>
       current === '无法开始播放当前预览区间。' ? null : current,
@@ -411,6 +586,7 @@ export default function App() {
     setPreviewEndSec(null);
     setActiveIntervalId(null);
     setExactFrameMatch(null);
+    setExactMatchIntervalId(null);
     setExactMatchStatus('idle');
     setCurrentTimeSec(targetSec);
     video.currentTime = targetSec;
@@ -440,6 +616,7 @@ export default function App() {
 
     setActiveIntervalId(null);
     setExactFrameMatch(null);
+    setExactMatchIntervalId(null);
     setExactMatchStatus('idle');
     setCurrentTimeSec(targetSec);
     video.currentTime = targetSec;
@@ -558,9 +735,13 @@ export default function App() {
     }
 
     setIntervals((current) => {
-      const existing = current.find((interval) =>
-        isSameSimilarityRange(interval, exactFrameMatch),
-      );
+      const existing =
+        (exactMatchIntervalId
+          ? current.find((interval) => interval.id === exactMatchIntervalId)
+          : undefined) ??
+        current.find((interval) =>
+          isSameSimilarityRange(interval, exactFrameMatch),
+        );
 
       if (existing) {
         return current.map((interval) =>
@@ -573,10 +754,13 @@ export default function App() {
         );
       }
 
+      const fallbackId = buildSimilarityIntervalId(exactFrameMatch);
+      setExactMatchIntervalId(fallbackId);
+
       return [
         ...current,
         {
-          id: buildSimilarityIntervalId(exactFrameMatch),
+          id: fallbackId,
           startSec: exactFrameMatch.startSec,
           endSec: exactFrameMatch.endSec,
           durationSec: exactFrameMatch.durationSec,
@@ -590,20 +774,26 @@ export default function App() {
   function handleSelectAll(selected: boolean) {
     if (exportStatus === 'exporting') return;
 
+    const visibleIds = new Set(visibleIntervals.map((interval) => interval.id));
     setIntervals((current) =>
-      current.map((interval) => ({
-        ...interval,
-        selectedForRemoval: selected,
-      })),
+      current.map((interval) =>
+        visibleIds.has(interval.id)
+          ? { ...interval, selectedForRemoval: selected }
+          : interval,
+      ),
     );
   }
 
   function handleDeleteSelectedIntervals() {
     if (exportStatus === 'exporting') return;
 
+    const visibleIds = new Set(visibleIntervals.map((interval) => interval.id));
     const deletedIds = new Set(
       intervals
-        .filter((interval) => interval.selectedForRemoval)
+        .filter(
+          (interval) =>
+            visibleIds.has(interval.id) && interval.selectedForRemoval,
+        )
         .map((interval) => interval.id),
     );
     if (deletedIds.size === 0) return;
@@ -616,6 +806,36 @@ export default function App() {
       setActiveIntervalId(null);
       setPreviewEndSec(null);
     }
+  }
+
+  function handleClearVisibleRemoval() {
+    if (exportStatus === 'exporting') return;
+
+    const visibleIds = new Set(visibleIntervals.map((interval) => interval.id));
+    setIntervals((current) =>
+      current.map((interval) =>
+        visibleIds.has(interval.id)
+          ? { ...interval, selectedForRemoval: false }
+          : interval,
+      ),
+    );
+  }
+
+  function handleDeleteInterval(intervalId: string) {
+    if (exportStatus === 'exporting') return;
+
+    setIntervals((current) =>
+      current.filter((interval) => interval.id !== intervalId),
+    );
+
+    if (activeIntervalId === intervalId) {
+      setActiveIntervalId(null);
+      setPreviewEndSec(null);
+    }
+  }
+
+  function handleResetIntervalFilters() {
+    setIntervalFilters(createDefaultIntervalFilters(media?.durationSec ?? null));
   }
 
   async function handleExport() {
@@ -820,7 +1040,7 @@ export default function App() {
               <Timeline
                 durationSec={media.durationSec}
                 currentTimeSec={currentTimeSec}
-                intervals={intervals}
+                intervals={visibleIntervals}
                 activeIntervalId={activeIntervalId}
                 onSeek={handleSeek}
               />
@@ -857,7 +1077,12 @@ export default function App() {
 
           <FreezePanel
             status={analysisStatus}
-            intervals={intervals}
+            intervals={visibleIntervals}
+            totalIntervalCount={intervals.length}
+            sourceCounts={sourceCounts}
+            searchRuns={searchRuns}
+            filters={intervalFilters}
+            lastDetectionCount={lastDetectionCount}
             activeIntervalId={activeIntervalId}
             options={detectionOptions}
             currentTimeSec={currentTimeSec}
@@ -878,6 +1103,7 @@ export default function App() {
             onVisualChangeLevelChange={(level) => {
               setVisualChangeLevel(level);
               setExactFrameMatch(null);
+              setExactMatchIntervalId(null);
               setExactMatchStatus('idle');
             }}
             onPreviewRange={(startSec, endSec) =>
@@ -887,6 +1113,10 @@ export default function App() {
             onToggleRemoval={handleToggleRemoval}
             onSelectAll={handleSelectAll}
             onDeleteSelected={handleDeleteSelectedIntervals}
+            onClearVisibleRemoval={handleClearVisibleRemoval}
+            onDeleteInterval={handleDeleteInterval}
+            onFiltersChange={setIntervalFilters}
+            onResetFilters={handleResetIntervalFilters}
           />
         </aside>
       </section>
