@@ -39,6 +39,8 @@ interface NavigationRegion {
   kind: 'interval' | 'gap';
   startSec: number;
   endSec: number;
+  matchStartSec: number;
+  matchEndSec: number;
 }
 
 function buildNavigationRegions(
@@ -48,37 +50,72 @@ function buildNavigationRegions(
   epsilonSec: number,
 ): NavigationRegion[] {
   const merged = mergeTimeRanges(ranges, epsilonSec);
-  if (merged.length === 0) return [];
+  if (merged.length === 0) {
+    return [
+      {
+        kind: 'gap',
+        startSec: 0,
+        endSec: durationSec,
+        matchStartSec: 0,
+        matchEndSec: durationSec,
+      },
+    ];
+  }
 
   const regions: NavigationRegion[] = [];
+  const first = merged[0];
+  const leftGapEndSec = first.startSec - frameDurationSec;
+
+  if (leftGapEndSec >= -epsilonSec) {
+    regions.push({
+      kind: 'gap',
+      startSec: 0,
+      endSec: Math.max(0, leftGapEndSec),
+      matchStartSec: 0,
+      matchEndSec: first.startSec,
+    });
+  }
 
   merged.forEach((range, index) => {
     regions.push({
       kind: 'interval',
       startSec: range.startSec,
       endSec: range.endSec,
+      matchStartSec: range.startSec,
+      matchEndSec: range.endSec,
     });
 
     const next = merged[index + 1];
     if (!next) return;
 
-    const gapStartSec = Math.min(
-      durationSec,
-      range.endSec + frameDurationSec,
-    );
-    const gapEndSec = Math.max(
-      0,
-      next.startSec - frameDurationSec,
-    );
+    const gapStartSec = range.endSec + frameDurationSec;
+    const gapEndSec = next.startSec - frameDurationSec;
 
     if (gapEndSec + epsilonSec >= gapStartSec) {
       regions.push({
         kind: 'gap',
-        startSec: gapStartSec,
-        endSec: gapEndSec,
+        startSec: Math.min(durationSec, gapStartSec),
+        endSec: Math.max(0, gapEndSec),
+        matchStartSec: range.endSec,
+        matchEndSec: next.startSec,
       });
     }
   });
+
+  const last = merged.at(-1);
+  if (last) {
+    const rightGapStartSec = last.endSec + frameDurationSec;
+
+    if (rightGapStartSec <= durationSec + epsilonSec) {
+      regions.push({
+        kind: 'gap',
+        startSec: Math.min(durationSec, rightGapStartSec),
+        endSec: durationSec,
+        matchStartSec: last.endSec,
+        matchEndSec: durationSec,
+      });
+    }
+  }
 
   return regions;
 }
@@ -104,13 +141,8 @@ export function findIntervalBoundaryJumpTarget(
       ? frameDurationSec
       : 0;
 
-  const merged = mergeTimeRanges(ranges, epsilonSec);
-  if (merged.length === 0) {
-    return direction < 0 ? 0 : durationSec;
-  }
-
   const regions = buildNavigationRegions(
-    merged,
+    ranges,
     durationSec,
     safeFrameDurationSec,
     epsilonSec,
@@ -124,60 +156,25 @@ export function findIntervalBoundaryJumpTarget(
     const atStart = isNear(currentSec, region.startSec);
     const atEnd = isNear(currentSec, region.endSec);
     const inside =
-      currentSec > region.startSec + epsilonSec &&
-      currentSec < region.endSec - epsilonSec;
+      currentSec > region.matchStartSec + epsilonSec &&
+      currentSec < region.matchEndSec - epsilonSec;
 
     if (direction < 0) {
-      if (inside || atEnd) {
-        return region.startSec;
-      }
-
       if (atStart) {
         return index > 0 ? regions[index - 1].startSec : null;
       }
-    } else {
-      if (inside || atStart) {
-        return region.endSec;
-      }
 
+      if (inside || atEnd) {
+        return region.startSec;
+      }
+    } else {
       if (atEnd) {
         return index + 1 < regions.length ? regions[index + 1].endSec : null;
       }
-    }
-  }
 
-  const firstInterval = merged[0];
-  if (currentSec < firstInterval.startSec - epsilonSec) {
-    return direction < 0 ? 0 : firstInterval.endSec;
-  }
-
-  const lastInterval = merged.at(-1);
-  if (lastInterval && currentSec > lastInterval.endSec + epsilonSec) {
-    return direction < 0 ? lastInterval.startSec : durationSec;
-  }
-
-  for (let index = 0; index < merged.length - 1; index += 1) {
-    const previous = merged[index];
-    const next = merged[index + 1];
-
-    if (
-      currentSec > previous.endSec + epsilonSec &&
-      currentSec < next.startSec - epsilonSec
-    ) {
-      const gapStartSec = previous.endSec + safeFrameDurationSec;
-      const gapEndSec = next.startSec - safeFrameDurationSec;
-
-      if (direction < 0) {
-        return Math.max(
-          0,
-          Math.min(durationSec, gapStartSec),
-        );
+      if (inside || atStart) {
+        return region.endSec;
       }
-
-      return Math.max(
-        0,
-        Math.min(durationSec, gapEndSec),
-      );
     }
   }
 

@@ -722,6 +722,24 @@ describe('selection, timeline, and export workflow', () => {
 
     fireEvent.click(jumpRight);
     expect(video.currentTime).toBeCloseTo(38.5, 5);
+
+    video.currentTime = 5;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(12.4 - frameSec, 5);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(18.2, 5);
+
+    video.currentTime = 100;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(38.5 + frameSec, 5);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(31.1, 5);
   });
 
   it('jumps to timeline start or end when the timeline has no visible intervals', async () => {
@@ -770,7 +788,12 @@ describe('selection, timeline, and export workflow', () => {
     fireEvent.click(
       screen.getByRole('button', { name: '向右跳转到区间结束' }),
     );
-    expect(video.currentTime).toBeCloseTo(38.5, 3);
+    expect(video.currentTime).toBeCloseTo(31.1 - 1 / 30, 5);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向右跳转到区间结束' }),
+    );
+    expect(video.currentTime).toBeCloseTo(38.5, 5);
 
     video.currentTime = 35;
     fireEvent.timeUpdate(video);

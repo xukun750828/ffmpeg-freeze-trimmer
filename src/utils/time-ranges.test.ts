@@ -139,6 +139,111 @@ describe('time range union', () => {
     ).toBeCloseTo(38.5, 6);
   });
 
+  it('treats the leftmost and rightmost timeline gaps as normal navigation regions', () => {
+    const ranges = [
+      { startSec: 12.4, endSec: 18.2 },
+      { startSec: 31.1, endSec: 38.5 },
+    ];
+
+    const leftGapEndSec = 12.4 - FRAME_SEC;
+    const rightGapStartSec = 38.5 + FRAME_SEC;
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        5,
+        -1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(0, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        5,
+        1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(leftGapEndSec, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        leftGapEndSec,
+        1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(18.2, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        95,
+        -1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(rightGapStartSec, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        rightGapStartSec,
+        -1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(31.1, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        95,
+        1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(DURATION_SEC, 6);
+  });
+
+  it('uses the edge gap as the adjacent region of the first and last interval', () => {
+    const ranges = [
+      { startSec: 12.4, endSec: 18.2 },
+      { startSec: 31.1, endSec: 38.5 },
+    ];
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        12.4,
+        -1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(0, 6);
+
+    expect(
+      findIntervalBoundaryJumpTarget(
+        ranges,
+        38.5,
+        1,
+        DURATION_SEC,
+        FRAME_SEC,
+        EPSILON_SEC,
+      ),
+    ).toBeCloseTo(DURATION_SEC, 6);
+  });
+
   it('jumps to timeline start/end when there are no visible intervals', () => {
     expect(
       findIntervalBoundaryJumpTarget(
