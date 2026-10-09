@@ -15,7 +15,6 @@ describe('HoverPreviewProvider', () => {
           currentTimeSec={0}
           intervals={[]}
           activeIntervalId={null}
-          onPreview={vi.fn()}
           onSeek={vi.fn()}
         />
       </HoverPreviewProvider>,

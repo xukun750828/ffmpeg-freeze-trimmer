@@ -19,7 +19,6 @@ function renderTimeline(
           currentTimeSec={10}
           intervals={[]}
           activeIntervalId={null}
-          onPreview={vi.fn()}
           onSeek={onSeek}
         />
       </HoverPreviewProvider>,

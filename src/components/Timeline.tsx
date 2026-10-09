@@ -7,7 +7,6 @@ interface TimelineProps {
   currentTimeSec: number;
   intervals: FreezeInterval[];
   activeIntervalId: string | null;
-  onPreview: (interval: FreezeInterval) => void;
   onSeek: (timeSec: number) => void;
 }
 
@@ -16,7 +15,6 @@ export function Timeline({
   currentTimeSec,
   intervals,
   activeIntervalId,
-  onPreview,
   onSeek,
 }: TimelineProps) {
   const { requestPreview, hidePreview } = useHoverPreview();
@@ -110,7 +108,7 @@ export function Timeline({
             className="timeline-played"
             style={{ width: `${playheadPct}%` }}
           />
-          {intervals.map((interval, index) => {
+          {intervals.map((interval) => {
             const left = (interval.startSec / durationSec) * 100;
             const width =
               ((interval.endSec - interval.startSec) / durationSec) *
@@ -126,17 +124,14 @@ export function Timeline({
               .join(' ');
 
             return (
-              <button
+              <div
                 key={interval.id}
-                type="button"
                 className={classNames}
-                aria-label={`时间轴候选区间 ${index + 1}`}
+                aria-hidden="true"
                 style={{
                   left: `${left}%`,
                   width: `${Math.max(width, 0.35)}%`,
                 }}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => onPreview(interval)}
               />
             );
           })}

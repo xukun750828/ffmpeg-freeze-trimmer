@@ -801,7 +801,6 @@ export default function App() {
                 currentTimeSec={currentTimeSec}
                 intervals={intervals}
                 activeIntervalId={activeIntervalId}
-                onPreview={handlePreview}
                 onSeek={handleSeek}
               />
 

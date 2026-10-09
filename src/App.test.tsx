@@ -551,7 +551,7 @@ describe('selection, timeline, and export workflow', () => {
     });
   });
 
-  it('previews intervals from the timeline', async () => {
+  it('seeks to the clicked pointer time even when the click is inside a candidate interval', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;
 
@@ -559,12 +559,33 @@ describe('selection, timeline, and export workflow', () => {
     await importVideoAndWait();
     await startDetectionAndWait();
 
-    fireEvent.click(screen.getByRole('button', { name: '时间轴候选区间 2' }));
+    const timeline = screen.getByTestId('timeline-hover-zone');
+    vi.spyOn(timeline, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 200,
+      left: 0,
+      top: 200,
+      right: 1255,
+      bottom: 224,
+      width: 1255,
+      height: 24,
+      toJSON: () => ({}),
+    });
+
+    const candidateMarkers = document.querySelectorAll('.timeline-interval');
+    expect(candidateMarkers).toHaveLength(2);
+
+    playSpy.mockClear();
+    fireEvent.pointerDown(candidateMarkers[1], {
+      pointerId: 1,
+      button: 0,
+      clientX: 350,
+    });
 
     const video = document.querySelector('video');
     expect(video).not.toBeNull();
-    expect(video!.currentTime).toBeCloseTo(30.6, 3);
-    expect(playSpy).toHaveBeenCalledOnce();
+    expect(video!.currentTime).toBeCloseTo(35, 3);
+    expect(playSpy).not.toHaveBeenCalled();
   });
 
   it('uses the unified custom controls and steps exactly one frame in either direction', async () => {
