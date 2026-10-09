@@ -664,6 +664,79 @@ describe('selection, timeline, and export workflow', () => {
     expect(playSpy).not.toHaveBeenCalled();
   });
 
+  it('jumps to current then adjacent interval boundaries with repeated left and right clicks', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+    await startDetectionAndWait();
+
+    const video = document.querySelector('video')!;
+    const jumpLeft = screen.getByRole('button', {
+      name: '向左跳转到区间开始',
+    });
+    const jumpRight = screen.getByRole('button', {
+      name: '向右跳转到区间结束',
+    });
+
+    video.currentTime = 35;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(31.1, 3);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(12.4, 3);
+
+    fireEvent.click(jumpLeft);
+    expect(video.currentTime).toBeCloseTo(12.4, 3);
+
+    video.currentTime = 15;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(18.2, 3);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(38.5, 3);
+
+    fireEvent.click(jumpRight);
+    expect(video.currentTime).toBeCloseTo(38.5, 3);
+  });
+
+  it('uses only currently filtered intervals for interval-boundary jumps', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+    await startDetectionAndWait();
+
+    fireEvent.change(screen.getByLabelText('筛选最小时长'), {
+      target: { value: '7' },
+    });
+
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(1);
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 15;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向右跳转到区间结束' }),
+    );
+    expect(video.currentTime).toBeCloseTo(38.5, 3);
+
+    video.currentTime = 35;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '向左跳转到区间开始' }),
+    );
+    expect(video.currentTime).toBeCloseTo(31.1, 3);
+  });
+
   it('uses the unified custom controls and steps exactly one frame in either direction', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;

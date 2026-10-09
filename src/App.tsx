@@ -31,6 +31,7 @@ const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
 const PREVIEW_LEAD_SEC = 0.5;
 const PREVIEW_TAIL_SEC = 0.5;
 const SIMILARITY_RANGE_MATCH_EPSILON_SEC = 0.05;
+const MIN_INTERVAL_JUMP_EPSILON_SEC = 0.001;
 
 function createDefaultIntervalFilters(
   durationSec: number | null = null,
@@ -592,6 +593,42 @@ export default function App() {
     video.currentTime = targetSec;
   }
 
+  function handleJumpIntervalBoundary(direction: -1 | 1) {
+    const video = videoRef.current;
+    if (!video || !media || visibleIntervals.length === 0) return;
+
+    const currentSec = getCurrentPlaybackTimeSec();
+    if (currentSec === null) return;
+
+    const epsilonSec = Math.max(
+      MIN_INTERVAL_JUMP_EPSILON_SEC,
+      media.fps > 0 ? 0.5 / media.fps : MIN_INTERVAL_JUMP_EPSILON_SEC,
+    );
+
+    const boundaries =
+      direction < 0
+        ? visibleIntervals
+            .map((interval) => interval.startSec)
+            .sort((a, b) => a - b)
+        : visibleIntervals
+            .map((interval) => interval.endSec)
+            .sort((a, b) => a - b);
+
+    const targetSec =
+      direction < 0
+        ? [...boundaries]
+            .reverse()
+            .find((boundarySec) => boundarySec < currentSec - epsilonSec)
+        : boundaries.find(
+            (boundarySec) => boundarySec > currentSec + epsilonSec,
+          );
+
+    if (targetSec === undefined) return;
+
+    video.pause();
+    handleSeek(targetSec);
+  }
+
   function handleStepFrame(direction: -1 | 1) {
     const video = videoRef.current;
     if (!video || !media || media.fps <= 0) return;
@@ -985,6 +1022,31 @@ export default function App() {
                   >
                     {isPlaying ? '❚❚ 暂停' : '▶ 播放'}
                   </button>
+                  <button
+                    type="button"
+                    aria-label="向左跳转到区间开始"
+                    onClick={() => handleJumpIntervalBoundary(-1)}
+                    disabled={
+                      exportStatus === 'exporting' ||
+                      visibleIntervals.length === 0
+                    }
+                    title="第一次跳到当前区间开始；再次点击跳到上一个区间开始"
+                  >
+                    ◀ 区间
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="向右跳转到区间结束"
+                    onClick={() => handleJumpIntervalBoundary(1)}
+                    disabled={
+                      exportStatus === 'exporting' ||
+                      visibleIntervals.length === 0
+                    }
+                    title="第一次跳到当前区间结束；再次点击跳到下一个区间结束"
+                  >
+                    区间 ▶
+                  </button>
+                  <span className="control-divider" aria-hidden="true" />
                   <button
                     type="button"
                     aria-label="向左移动一帧"
