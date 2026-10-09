@@ -597,6 +597,26 @@ export default function App() {
     );
   }
 
+  function handleDeleteSelectedIntervals() {
+    if (exportStatus === 'exporting') return;
+
+    const deletedIds = new Set(
+      intervals
+        .filter((interval) => interval.selectedForRemoval)
+        .map((interval) => interval.id),
+    );
+    if (deletedIds.size === 0) return;
+
+    setIntervals((current) =>
+      current.filter((interval) => !deletedIds.has(interval.id)),
+    );
+
+    if (activeIntervalId && deletedIds.has(activeIntervalId)) {
+      setActiveIntervalId(null);
+      setPreviewEndSec(null);
+    }
+  }
+
   async function handleExport() {
     if (
       !window.desktopApi ||
@@ -865,6 +885,7 @@ export default function App() {
             onPreview={handlePreview}
             onToggleRemoval={handleToggleRemoval}
             onSelectAll={handleSelectAll}
+            onDeleteSelected={handleDeleteSelectedIntervals}
           />
         </aside>
       </section>

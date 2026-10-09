@@ -403,6 +403,66 @@ describe('selection, timeline, and export workflow', () => {
     expect(screen.getByText('已选 2 段')).toBeInTheDocument();
   });
 
+  it('removes selected candidates from the list regardless of their source', async () => {
+    const desktopApi = createDesktopApi();
+    window.desktopApi = desktopApi;
+
+    render(<App />);
+    await importVideoAndWait();
+    await startDetectionAndWait();
+
+    const deleteButton = screen.getByRole('button', {
+      name: '删除所选区间',
+    });
+    expect(deleteButton).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText('选择删除静止区间 1'));
+
+    const video = document.querySelector('video')!;
+    video.currentTime = 42.5;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(screen.getByRole('button', { name: '定位当前画面' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('当前画面相似区间持续 8.000 秒'),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '加入当前相似区间待删除',
+      }),
+    );
+
+    video.currentTime = 60;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(
+      screen.getByRole('button', { name: '设置人工删除区间起点' }),
+    );
+    video.currentTime = 65;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(
+      screen.getByRole('button', { name: '设置人工删除区间终点' }),
+    );
+
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(4);
+    expect(screen.getByText('已选择 3 / 4')).toBeInTheDocument();
+    expect(deleteButton).toBeEnabled();
+
+    fireEvent.click(deleteButton);
+
+    expect(document.querySelectorAll('.freeze-row')).toHaveLength(1);
+    expect(document.querySelectorAll('.timeline-interval')).toHaveLength(1);
+    expect(screen.getByText('已选择 0 / 1')).toBeInTheDocument();
+    expect(screen.getByText('已选 0 段')).toBeInTheDocument();
+    expect(screen.getByText('删除 00:00.000')).toBeInTheDocument();
+    expect(screen.getAllByText('方向检测')).toHaveLength(1);
+    expect(screen.queryByText('人工指定')).not.toBeInTheDocument();
+    expect(screen.queryByText('相似定位')).not.toBeInTheDocument();
+    expect(deleteButton).toBeDisabled();
+  });
+
   it('adds and removes the current similarity parent interval from deletion candidates', async () => {
     const desktopApi = createDesktopApi();
     window.desktopApi = desktopApi;

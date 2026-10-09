@@ -34,6 +34,7 @@ interface FreezePanelProps {
   onPreview: (interval: FreezeInterval) => void;
   onToggleRemoval: (intervalId: string) => void;
   onSelectAll: (selected: boolean) => void;
+  onDeleteSelected: () => void;
 }
 
 export function FreezePanel({
@@ -61,6 +62,7 @@ export function FreezePanel({
   onPreview,
   onToggleRemoval,
   onSelectAll,
+  onDeleteSelected,
 }: FreezePanelProps) {
   const selectedCount = intervals.filter(
     (interval) => interval.selectedForRemoval,
@@ -342,16 +344,25 @@ export function FreezePanel({
             <span>人工指定、相似定位与方向检测结果统一在这里管理</span>
           </div>
           <div className="selection-toolbar">
-          <label>
-            <input
-              aria-label="全选静止区间"
-              type="checkbox"
-              checked={allSelected}
-              disabled={selectionDisabled}
-              onChange={(event) => onSelectAll(event.target.checked)}
-            />
-            <span>全选</span>
-          </label>
+            <label>
+              <input
+                aria-label="全选静止区间"
+                type="checkbox"
+                checked={allSelected}
+                disabled={selectionDisabled}
+                onChange={(event) => onSelectAll(event.target.checked)}
+              />
+              <span>全选</span>
+            </label>
+            <button
+              type="button"
+              className="candidate-delete-button"
+              onClick={onDeleteSelected}
+              disabled={selectionDisabled || selectedCount === 0}
+              title="从候选列表移除已勾选区间，不会立即修改源视频"
+            >
+              删除所选区间
+            </button>
             <span>已选择 {selectedCount} / {intervals.length}</span>
           </div>
         </>

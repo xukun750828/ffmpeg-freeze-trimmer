@@ -330,6 +330,19 @@ select { width: 100%; padding: 7px 8px; }
   width: auto;
 }
 
+.candidate-delete-button {
+  padding: 5px 9px;
+  border-color: #7a343a;
+  color: #fecaca;
+  background: #32191d;
+  font-size: 11px;
+}
+
+.candidate-delete-button:hover:not(:disabled) {
+  border-color: #a64f57;
+  background: #422026;
+}
+
 .freeze-row {
   grid-template-columns: 24px 1fr;
 }
