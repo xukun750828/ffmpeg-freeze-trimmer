@@ -8,10 +8,13 @@ import {
   buildFreezeDetectArgs,
   buildRefineFreezeDetectArgs,
   buildRefinementWindows,
+  filterCandidatesByPotentialSilence,
+  getDirectedSearchChunkSec,
   getFastScanProfile,
   mapWithConcurrency,
   matchRefinementBoundaries,
   mergeOverlappingFreezeIntervals,
+  orderDirectedCandidates,
 } from '../electron/main/freeze/freeze-detector';
 
 describe('FreezeParser', () => {
@@ -60,6 +63,44 @@ describe('FreezeParser', () => {
     const parser = new FreezeParser();
     parser.pushLine('frame= 100 fps=0.0 q=-0.0');
     expect(parser.finish(10)).toEqual([]);
+  });
+});
+
+describe('directed freeze search planning', () => {
+  const candidates = [
+    { id: 'a', startSec: 10, endSec: 14, durationSec: 4, selectedForRemoval: false },
+    { id: 'b', startSec: 20, endSec: 24, durationSec: 4, selectedForRemoval: false },
+    { id: 'c', startSec: 30, endSec: 34, durationSec: 4, selectedForRemoval: false },
+  ];
+
+  it('ramps scan chunks from 30 to 300 seconds and then stays bounded', () => {
+    expect([0, 1, 2, 3, 4, 9].map(getDirectedSearchChunkSec)).toEqual([
+      30,
+      60,
+      120,
+      300,
+      300,
+      300,
+    ]);
+  });
+
+  it('orders only direction-relevant candidates from nearest to farthest', () => {
+    expect(orderDirectedCandidates(candidates, 16, 'forward').map((item) => item.id)).toEqual([
+      'b',
+      'c',
+    ]);
+    expect(orderDirectedCandidates(candidates, 28, 'backward').map((item) => item.id)).toEqual([
+      'b',
+      'a',
+    ]);
+  });
+
+  it('prefilters coarse candidates with a safety margin around known silence', () => {
+    const filtered = filterCandidatesByPotentialSilence(candidates, [
+      { startSec: 21.8, endSec: 24.2 },
+    ]);
+
+    expect(filtered.map((item) => item.id)).toEqual(['b']);
   });
 });
 

@@ -1,7 +1,12 @@
+import { stat } from 'node:fs/promises';
 import { resolveFfmpegPath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
 import { FreezeParser } from './freeze-parser';
-import { detectSilenceInRange, filterFreezesBySilence } from './silence-detector';
+import {
+  detectSilenceInRange,
+  filterFreezesBySilence,
+  type SilenceInterval,
+} from './silence-detector';
 import type { DetectionOptions, DirectedDetectionRequest, FreezeInterval } from './types';
 
 const FAST_SCAN_THRESHOLD_SEC = 30;
@@ -11,8 +16,79 @@ const REFINE_WINDOW_MERGE_GAP_SEC = 0.5;
 const MAX_REFINEMENT_WINDOW_SEC = 12;
 const REFINE_MATCH_TOLERANCE_SEC = 2.5;
 const REFINEMENT_CONCURRENCY = 4;
-const DIRECTED_SEARCH_CHUNK_SEC = 300;
+const DIRECTED_SEARCH_CHUNK_SEQUENCE_SEC = [30, 60, 120, 300] as const;
 const DIRECTED_SEARCH_MIN_CONTEXT_SEC = 5;
+const DIRECTED_REFINEMENT_GUARD = 2;
+const DIRECTED_REFINEMENT_BATCH_MIN = 4;
+const DIRECTED_CACHE_MAX_ENTRIES = 64;
+
+interface CachedVisualScan {
+  intervals: FreezeInterval[];
+  precise: boolean;
+}
+
+const directedVisualScanCache = new Map<string, CachedVisualScan>();
+const directedSilenceCache = new Map<string, SilenceInterval[]>();
+
+function getCachedValue<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key);
+  if (value === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedValue<T>(cache: Map<string, T>, key: string, value: T): void {
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > DIRECTED_CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+async function getInputCacheIdentity(inputPath: string): Promise<string> {
+  try {
+    const info = await stat(inputPath);
+    return `${inputPath}\u0000${info.size}\u0000${info.mtimeMs}`;
+  } catch {
+    return inputPath;
+  }
+}
+
+function cloneFreezeIntervals(intervals: readonly FreezeInterval[]): FreezeInterval[] {
+  return intervals.map((interval) => ({ ...interval }));
+}
+
+function cloneSilenceIntervals(intervals: readonly SilenceInterval[]): SilenceInterval[] {
+  return intervals.map((interval) => ({ ...interval }));
+}
+
+export function getDirectedSearchChunkSec(iteration: number): number {
+  const safeIndex = Math.max(0, Math.floor(iteration));
+  return DIRECTED_SEARCH_CHUNK_SEQUENCE_SEC[
+    Math.min(safeIndex, DIRECTED_SEARCH_CHUNK_SEQUENCE_SEC.length - 1)
+  ];
+}
+
+export function orderDirectedCandidates(
+  candidates: readonly FreezeInterval[],
+  originSec: number,
+  direction: DirectedDetectionRequest['direction'],
+): FreezeInterval[] {
+  if (direction === 'forward') {
+    return candidates
+      .filter((interval) => interval.endSec > originSec)
+      .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec)
+      .map((interval) => ({ ...interval }));
+  }
+
+  return candidates
+    .filter((interval) => interval.startSec < originSec)
+    .sort((a, b) => b.endSec - a.endSec || b.startSec - a.startSec)
+    .map((interval) => ({ ...interval }));
+}
 
 export interface FastScanProfile {
   fps: number;
@@ -507,6 +583,106 @@ function buildFastRangeFreezeDetectArgs(
   ];
 }
 
+function buildDirectedVisualCacheKey(
+  cacheIdentity: string,
+  startSec: number,
+  endSec: number,
+  options: DetectionOptions,
+): string {
+  return [
+    cacheIdentity,
+    startSec.toFixed(6),
+    endSec.toFixed(6),
+    options.noise.toFixed(8),
+    options.minDurationSec.toFixed(6),
+  ].join('|');
+}
+
+function buildDirectedSilenceCacheKey(
+  cacheIdentity: string,
+  startSec: number,
+  endSec: number,
+  options: DetectionOptions,
+): string {
+  return [
+    cacheIdentity,
+    'silence',
+    startSec.toFixed(6),
+    endSec.toFixed(6),
+    options.minDurationSec.toFixed(6),
+  ].join('|');
+}
+
+async function detectDirectedVisualScan(
+  inputPath: string,
+  mediaDurationSec: number,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  options: DetectionOptions,
+  cacheIdentity: string,
+  signal?: AbortSignal,
+): Promise<CachedVisualScan> {
+  const startSec = Math.max(0, Math.min(mediaDurationSec, rangeStartSec));
+  const endSec = Math.max(startSec, Math.min(mediaDurationSec, rangeEndSec));
+  const rangeDurationSec = endSec - startSec;
+  if (rangeDurationSec <= 0) {
+    return { intervals: [], precise: true };
+  }
+
+  const cacheKey = buildDirectedVisualCacheKey(
+    cacheIdentity,
+    startSec,
+    endSec,
+    options,
+  );
+  const cached = getCachedValue(directedVisualScanCache, cacheKey);
+  if (cached) {
+    return {
+      precise: cached.precise,
+      intervals: cloneFreezeIntervals(cached.intervals),
+    };
+  }
+
+  let scan: CachedVisualScan;
+  if (rangeDurationSec < FAST_SCAN_THRESHOLD_SEC) {
+    const local = await runDetectionPass(
+      buildRefineFreezeDetectArgs(
+        inputPath,
+        startSec,
+        rangeDurationSec,
+        options,
+      ),
+      rangeDurationSec,
+      signal,
+    );
+    scan = {
+      precise: true,
+      intervals: renumberIntervals(globalizeIntervals(local, startSec)),
+    };
+  } else {
+    const local = await runDetectionPass(
+      buildFastRangeFreezeDetectArgs(
+        inputPath,
+        startSec,
+        endSec,
+        options,
+      ),
+      rangeDurationSec,
+      signal,
+    );
+    scan = {
+      precise: false,
+      intervals: renumberIntervals(globalizeIntervals(local, startSec)),
+    };
+  }
+
+  setCachedValue(directedVisualScanCache, cacheKey, {
+    precise: scan.precise,
+    intervals: cloneFreezeIntervals(scan.intervals),
+  });
+  return scan;
+}
+
 async function detectVisualFreezesInRange(
   inputPath: string,
   mediaDurationSec: number,
@@ -565,6 +741,54 @@ async function detectVisualFreezesInRange(
   return renumberIntervals(refined);
 }
 
+async function getDirectedSilencesInRange(
+  inputPath: string,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  options: DetectionOptions,
+  cacheIdentity: string,
+  signal?: AbortSignal,
+): Promise<SilenceInterval[]> {
+  const cacheKey = buildDirectedSilenceCacheKey(
+    cacheIdentity,
+    rangeStartSec,
+    rangeEndSec,
+    options,
+  );
+  const cached = getCachedValue(directedSilenceCache, cacheKey);
+  if (cached) return cloneSilenceIntervals(cached);
+
+  const silences = await detectSilenceInRange(
+    inputPath,
+    rangeStartSec,
+    rangeEndSec,
+    options,
+    signal,
+  );
+  setCachedValue(
+    directedSilenceCache,
+    cacheKey,
+    cloneSilenceIntervals(silences),
+  );
+  return silences;
+}
+
+export function filterCandidatesByPotentialSilence(
+  candidates: readonly FreezeInterval[],
+  silences: readonly SilenceInterval[],
+  toleranceSec = REFINE_MATCH_TOLERANCE_SEC,
+): FreezeInterval[] {
+  return candidates
+    .filter((candidate) =>
+      silences.some(
+        (silence) =>
+          silence.endSec > candidate.startSec - toleranceSec &&
+          silence.startSec < candidate.endSec + toleranceSec,
+      ),
+    )
+    .map((candidate) => ({ ...candidate }));
+}
+
 async function applyAudioConfirmation(
   inputPath: string,
   rangeStartSec: number,
@@ -572,6 +796,7 @@ async function applyAudioConfirmation(
   visualIntervals: FreezeInterval[],
   request: DirectedDetectionRequest,
   signal?: AbortSignal,
+  cacheIdentity?: string,
 ): Promise<FreezeInterval[]> {
   if (
     visualIntervals.length === 0 ||
@@ -581,19 +806,142 @@ async function applyAudioConfirmation(
     return visualIntervals;
   }
 
-  const silences = await detectSilenceInRange(
-    inputPath,
-    rangeStartSec,
-    rangeEndSec,
-    request.options,
-    signal,
-  );
+  const silences = cacheIdentity
+    ? await getDirectedSilencesInRange(
+        inputPath,
+        rangeStartSec,
+        rangeEndSec,
+        request.options,
+        cacheIdentity,
+        signal,
+      )
+    : await detectSilenceInRange(
+        inputPath,
+        rangeStartSec,
+        rangeEndSec,
+        request.options,
+        signal,
+      );
 
   return filterFreezesBySilence(
     visualIntervals,
     silences,
     request.options.minDurationSec,
   );
+}
+
+async function detectDirectedConfirmedInRange(
+  request: DirectedDetectionRequest,
+  rangeStartSec: number,
+  rangeEndSec: number,
+  cacheIdentity: string,
+  signal?: AbortSignal,
+): Promise<FreezeInterval[]> {
+  const requiresSilence =
+    !request.options.hasBackgroundSound && request.hasAudio;
+  const scanPromise = detectDirectedVisualScan(
+    request.path,
+    request.durationSec,
+    rangeStartSec,
+    rangeEndSec,
+    request.options,
+    cacheIdentity,
+    signal,
+  );
+  const silencePromise = requiresSilence
+    ? getDirectedSilencesInRange(
+        request.path,
+        rangeStartSec,
+        rangeEndSec,
+        request.options,
+        cacheIdentity,
+        signal,
+      )
+    : Promise.resolve<SilenceInterval[] | undefined>(undefined);
+
+  const [scan, precomputedSilences] = await Promise.all([
+    scanPromise,
+    silencePromise,
+  ]);
+
+  if (scan.intervals.length === 0) return [];
+
+  let candidates = scan.intervals;
+
+  if (requiresSilence) {
+    const silences = precomputedSilences ?? [];
+    if (silences.length === 0) return [];
+    candidates = filterCandidatesByPotentialSilence(
+      candidates,
+      silences,
+    );
+    if (candidates.length === 0) return [];
+  }
+
+  if (scan.precise) {
+    return precomputedSilences
+      ? filterFreezesBySilence(
+          candidates,
+          precomputedSilences,
+          request.options.minDurationSec,
+        )
+      : candidates;
+  }
+
+  const ordered = orderDirectedCandidates(
+    candidates,
+    request.currentTimeSec,
+    request.direction,
+  );
+  if (ordered.length === 0) return [];
+
+  const desiredConfirmedCount = Math.min(
+    ordered.length,
+    request.maxIntervals + DIRECTED_REFINEMENT_GUARD,
+  );
+  let nextIndex = 0;
+  let confirmed: FreezeInterval[] = [];
+  let batchSize = Math.max(
+    DIRECTED_REFINEMENT_BATCH_MIN,
+    request.maxIntervals + DIRECTED_REFINEMENT_GUARD,
+  );
+
+  while (nextIndex < ordered.length) {
+    const batch = ordered.slice(nextIndex, nextIndex + batchSize);
+    nextIndex += batch.length;
+
+    const refined = await refineCandidatesByMergedWindows(
+      request.path,
+      request.durationSec,
+      batch,
+      request.options,
+      signal,
+    );
+
+    if (refined.length > 0) {
+      const confirmedBatch = precomputedSilences
+        ? filterFreezesBySilence(
+            refined,
+            precomputedSilences,
+            request.options.minDurationSec,
+          )
+        : refined;
+      confirmed = mergeOverlappingFreezeIntervals([
+        ...confirmed,
+        ...confirmedBatch,
+      ]);
+    }
+
+    const enough = selectDirectedIntervals(confirmed, {
+      ...request,
+      maxIntervals: desiredConfirmedCount,
+    }).length >= desiredConfirmedCount;
+    if (enough) break;
+
+    batchSize = Math.max(DIRECTED_REFINEMENT_BATCH_MIN, request.maxIntervals);
+  }
+
+  return confirmed;
 }
 
 function selectDirectedIntervals(
@@ -633,9 +981,11 @@ export async function detectFreezesDirected(
     DIRECTED_SEARCH_MIN_CONTEXT_SEC,
     request.options.minDurationSec + REFINE_MARGIN_SEC + 1,
   );
+  const cacheIdentity = await getInputCacheIdentity(request.path);
 
   let cursor = origin;
   let collected: FreezeInterval[] = [];
+  let searchIteration = 0;
 
   while (
     request.direction === 'forward'
@@ -646,31 +996,24 @@ export async function detectFreezesDirected(
       throw new Error('PROCESS_ABORTED');
     }
 
+    const chunkSec = getDirectedSearchChunkSec(searchIteration);
+    searchIteration += 1;
+
     const rangeStartSec =
       request.direction === 'forward'
         ? Math.max(0, cursor - contextSec)
-        : Math.max(0, cursor - DIRECTED_SEARCH_CHUNK_SEC);
+        : Math.max(0, cursor - chunkSec);
 
     const rangeEndSec =
       request.direction === 'forward'
-        ? Math.min(request.durationSec, cursor + DIRECTED_SEARCH_CHUNK_SEC)
+        ? Math.min(request.durationSec, cursor + chunkSec)
         : Math.min(request.durationSec, cursor + contextSec);
 
-    const visual = await detectVisualFreezesInRange(
-      request.path,
-      request.durationSec,
-      rangeStartSec,
-      rangeEndSec,
-      request.options,
-      signal,
-    );
-
-    const confirmed = await applyAudioConfirmation(
-      request.path,
-      rangeStartSec,
-      rangeEndSec,
-      visual,
+    const confirmed = await detectDirectedConfirmedInRange(
       request,
+      rangeStartSec,
+      rangeEndSec,
+      cacheIdentity,
       signal,
     );
 
@@ -717,7 +1060,6 @@ export async function detectFreezesDirected(
 
   return selectDirectedIntervals(collected, request);
 }
-
 export async function detectFreezes(
   inputPath: string,
   mediaDurationSec: number,
