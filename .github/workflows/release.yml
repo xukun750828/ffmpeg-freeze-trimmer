@@ -47,7 +47,29 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Publish Windows release
-        run: npm run release:win
+      - name: Build Windows release assets
+        run: npm run package:win
+
+      - name: Create or update GitHub release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $repo = "${{ github.repository }}"
+
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $repo --title $tag --generate-notes
+          }
+
+          Get-ChildItem release -File | Where-Object {
+            $_.Name -eq 'latest.yml' -or
+            $_.Name -like 'ffmpeg-freeze-trimmer-setup-*.exe' -or
+            $_.Name -like 'ffmpeg-freeze-trimmer-setup-*.exe.blockmap'
+          } | ForEach-Object {
+            gh release upload $tag $_.FullName --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload $($_.Name)"
+            }
+          }
