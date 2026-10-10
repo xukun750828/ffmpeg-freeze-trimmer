@@ -13,6 +13,7 @@ import type {
 import { openVideoDialog } from './media/media-importer';
 import { probeMedia } from './media/media-probe';
 import { clearMediaRegistry, registerMediaProtocol } from './media/media-protocol';
+import { AppUpdateManager } from './update/update-manager';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -28,6 +29,7 @@ protocol.registerSchemesAsPrivileged([
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const videoExporter = new VideoExporter();
+let updateManager: AppUpdateManager | null = null;
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -49,7 +51,14 @@ function createWindow(): BrowserWindow {
     void window.loadFile(path.join(__dirname, '../../dist/index.html'));
   }
 
-  installApplicationMenu(window);
+  installApplicationMenu(window, {
+    checkForUpdates: () => {
+      if (updateManager) {
+        void updateManager.checkForUpdates(window, 'manual');
+      }
+    },
+  });
+  updateManager?.scheduleAutomaticCheck(window);
   return window;
 }
 
@@ -69,6 +78,7 @@ function validateDetectionOptions(options: DetectionOptions): void {
 
 app.whenReady().then(() => {
   registerMediaProtocol();
+  updateManager = new AppUpdateManager(isDev);
 
   ipcMain.handle('app:get-version', () => app.getVersion());
   ipcMain.handle('media:open', (event) => {

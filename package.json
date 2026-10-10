@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-freeze-trimmer",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "Desktop MP4 freeze-frame review and trimming tool powered by FFmpeg",
   "author": "xukun750828",
@@ -11,10 +11,13 @@
     "build": "npm run typecheck && vite build && node scripts/verify-dist-entry.cjs && tsc -p electron/tsconfig.json",
     "generate:icon": "node scripts/generate-icon.cjs",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
@@ -39,9 +42,18 @@
   "build": {
     "appId": "com.xukun.ffmpeg-freeze-trimmer",
     "productName": "FFmpeg 静止画面剪切器",
+    "artifactName": "ffmpeg-freeze-trimmer-setup-${version}.${ext}",
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "xukun750828",
+        "repo": "ffmpeg-freeze-trimmer",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "dist/**/*",
       "dist-electron/**/*",

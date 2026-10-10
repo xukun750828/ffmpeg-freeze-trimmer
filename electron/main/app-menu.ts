@@ -1,7 +1,14 @@
 import { Menu, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import { openVideoDialog } from './media/media-importer';
 
-export function installApplicationMenu(window: BrowserWindow): void {
+export interface ApplicationMenuActions {
+  checkForUpdates(): void;
+}
+
+export function installApplicationMenu(
+  window: BrowserWindow,
+  actions: ApplicationMenuActions,
+): void {
   const template: MenuItemConstructorOptions[] = [
     {
       label: '文件',
@@ -24,6 +31,19 @@ export function installApplicationMenu(window: BrowserWindow): void {
         {
           label: '退出',
           role: 'quit',
+        },
+      ],
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '检查更新…',
+          click: () => {
+            if (window.isDestroyed()) return;
+            window.focus();
+            actions.checkForUpdates();
+          },
         },
       ],
     },

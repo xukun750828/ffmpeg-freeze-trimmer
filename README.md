@@ -18,6 +18,7 @@
 12. 实时计算全局已选区间的删除总时长和预计输出时长；筛选不会改变已经隐藏的删除计划。
 13. 使用 FFmpeg Smart Copy / Smart Render 优先导出，必要时自动回退精确重编码。
 14. 导出过程展示进度，源文件永不修改。
+15. Windows 正式安装版启动后自动检查 GitHub Releases 更新；也可通过“帮助 → 检查更新…”手动检查，更新后台下载完成后可立即重启安装或稍后安装。
 
 ## 技术栈
 
@@ -29,6 +30,19 @@
 - Zustand（状态管理）
 - Vitest（单元测试）
 - Playwright（关键 UI 流程测试，后续引入）
+
+## 自动更新与发布
+
+自动更新仅在已安装的 Windows 正式版中启用，开发环境不会访问更新服务。客户端使用 `electron-updater` 读取 GitHub Releases 中的 `latest.yml`，并下载对应 NSIS 安装包 / blockmap。
+
+发布新版本时：
+
+1. 修改 `package.json` 版本号并提交到 `main`。
+2. 确认 CI 通过。
+3. 创建与版本一致的 Git 标签，例如 `v0.1.13`，并 push 该标签。
+4. `.github/workflows/release.yml` 会自动执行测试、构建，并将安装包、`latest.yml`、blockmap 发布到 GitHub Release。
+
+注意：`0.1.13` 是首个带自动更新能力的版本，因此从更老版本升级到 `0.1.13` 仍需手动安装一次；安装 `0.1.13` 之后的版本即可自动检测升级。
 
 ## 文档
 
