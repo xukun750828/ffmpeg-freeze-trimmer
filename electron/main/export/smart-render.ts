@@ -2,10 +2,54 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveFfprobePath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
+import type { SmartCopyBoundaryProbe } from './smart-copy';
 import type { TimeRange } from './types';
 
 const FRAME_PROBE_WINDOW_SEC = 20;
 const FRAME_PROBE_MAX_WINDOW_SEC = 120;
+export const SMART_RENDER_PROBE_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    }),
+  );
+
+  return results;
+}
+
+function getFrameToleranceSec(nominalFps: number): number {
+  const frameDurationSec = 1 / nominalFps;
+  return Math.max(0.002, Math.min(0.05, frameDurationSec * 0.55));
+}
+
+function findKnownKeyframeStart(
+  startSec: number,
+  probes: readonly SmartCopyBoundaryProbe[],
+  nominalFps: number,
+): number | null {
+  const toleranceSec = getFrameToleranceSec(nominalFps);
+  const probe = probes.find(
+    (item) =>
+      item.keyframeSec !== null &&
+      Math.abs(item.boundarySec - startSec) <= toleranceSec,
+  );
+  return probe?.keyframeSec ?? null;
+}
 
 export interface SmartRenderCodecParams {
   videoBitrate: number;
@@ -163,11 +207,7 @@ export function planSmartRenderRange(
   frames: SmartRenderFrame[],
   nominalFps: number,
 ): SmartRenderRangePlan {
-  const frameDurationSec = 1 / nominalFps;
-  const toleranceSec = Math.max(
-    0.002,
-    Math.min(0.05, frameDurationSec * 0.55),
-  );
+  const toleranceSec = getFrameToleranceSec(nominalFps);
   const timestampEpsilonSec = 1e-6;
   const countFramesUntil = (endSec: number) =>
     frames.filter(
@@ -358,6 +398,38 @@ export function buildSmartRenderConcatArgs(
   return args;
 }
 
+export function buildSmartRenderConcatMuxArgs(
+  concatPath: string,
+  audioPath: string,
+  outputPath: string,
+  params: SmartRenderCodecParams,
+): string[] {
+  return [
+    '-y',
+    '-hide_banner',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    concatPath,
+    '-i',
+    audioPath,
+    '-map',
+    '0:v:0',
+    '-map',
+    '1:a:0',
+    '-c',
+    'copy',
+    '-video_track_timescale',
+    Math.round(params.videoTimescale).toString(),
+    '-progress',
+    'pipe:1',
+    '-nostats',
+    outputPath,
+  ];
+}
+
 export async function probeSmartRenderCodecParams(
   inputPath: string,
   signal: AbortSignal,
@@ -419,49 +491,64 @@ export async function planSmartRenderRanges(
   keepRanges: TimeRange[],
   params: SmartRenderCodecParams,
   signal: AbortSignal,
+  knownBoundaryProbes: readonly SmartCopyBoundaryProbe[] = [],
 ): Promise<SmartRenderRangePlan[]> {
-  const plans: SmartRenderRangePlan[] = [];
+  return mapWithConcurrency(
+    keepRanges,
+    SMART_RENDER_PROBE_CONCURRENCY,
+    async (range) => {
+      if (range.startSec <= 0) {
+        return { mode: 'copy', range } satisfies SmartRenderRangePlan;
+      }
 
-  for (const range of keepRanges) {
-    if (range.startSec <= 0) {
-      plans.push({ mode: 'copy', range });
-      continue;
-    }
-
-    const firstEndSec = Math.min(
-      range.endSec,
-      range.startSec + FRAME_PROBE_WINDOW_SEC,
-    );
-    let frames = await probeFrames(
-      inputPath,
-      range.startSec,
-      firstEndSec,
-      signal,
-    );
-    let plan = planSmartRenderRange(range, frames, params.nominalFps);
-
-    if (
-      plan.mode === 'encode' &&
-      range.endSec > firstEndSec &&
-      firstEndSec < range.startSec + FRAME_PROBE_MAX_WINDOW_SEC
-    ) {
-      const expandedEndSec = Math.min(
-        range.endSec,
-        range.startSec + FRAME_PROBE_MAX_WINDOW_SEC,
+      const knownKeyframeSec = findKnownKeyframeStart(
+        range.startSec,
+        knownBoundaryProbes,
+        params.nominalFps,
       );
-      frames = await probeFrames(
+      if (knownKeyframeSec !== null) {
+        return {
+          mode: 'copy',
+          range: {
+            startSec: knownKeyframeSec,
+            endSec: range.endSec,
+          },
+        } satisfies SmartRenderRangePlan;
+      }
+
+      const firstEndSec = Math.min(
+        range.endSec,
+        range.startSec + FRAME_PROBE_WINDOW_SEC,
+      );
+      let frames = await probeFrames(
         inputPath,
         range.startSec,
-        expandedEndSec,
+        firstEndSec,
         signal,
       );
-      plan = planSmartRenderRange(range, frames, params.nominalFps);
-    }
+      let plan = planSmartRenderRange(range, frames, params.nominalFps);
 
-    plans.push(plan);
-  }
+      if (
+        plan.mode === 'encode' &&
+        range.endSec > firstEndSec &&
+        firstEndSec < range.startSec + FRAME_PROBE_MAX_WINDOW_SEC
+      ) {
+        const expandedEndSec = Math.min(
+          range.endSec,
+          range.startSec + FRAME_PROBE_MAX_WINDOW_SEC,
+        );
+        frames = await probeFrames(
+          inputPath,
+          range.startSec,
+          expandedEndSec,
+          signal,
+        );
+        plan = planSmartRenderRange(range, frames, params.nominalFps);
+      }
 
-  return plans;
+      return plan;
+    },
+  );
 }
 
 export async function writeSmartRenderConcatFile(

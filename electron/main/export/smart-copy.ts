@@ -5,6 +5,17 @@ import { runProcess } from '../process/process-runner';
 import type { TimeRange } from './types';
 
 const KEYFRAME_PROBE_RADIUS_SEC = 12;
+const KEYFRAME_PROBE_CONCURRENCY = 4;
+
+export interface SmartCopyBoundaryProbe {
+  boundarySec: number;
+  keyframeSec: number | null;
+}
+
+export interface SmartCopyAnalysis {
+  eligible: boolean;
+  probes: SmartCopyBoundaryProbe[];
+}
 
 export function getInternalCutBoundaries(
   removeRanges: TimeRange[],
@@ -46,6 +57,23 @@ export function isTimeAtKeyframe(
   return keyframeTimes.some(
     (keyframeSec) => Math.abs(keyframeSec - targetSec) <= toleranceSec,
   );
+}
+
+export function findMatchingKeyframe(
+  targetSec: number,
+  keyframeTimes: readonly number[],
+  toleranceSec: number,
+): number | null {
+  let nearest: number | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const keyframeSec of keyframeTimes) {
+    const distance = Math.abs(keyframeSec - targetSec);
+    if (distance <= toleranceSec && distance < nearestDistance) {
+      nearest = keyframeSec;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
 }
 
 function formatTimestamp(value: number): string {
@@ -109,6 +137,48 @@ async function probeKeyframesNear(
   return parseKeyframeTimes(result.stdout);
 }
 
+export async function analyzeSmartCopyEligibility(
+  inputPath: string,
+  removeRanges: TimeRange[],
+  durationSec: number,
+  fps: number,
+  signal: AbortSignal,
+): Promise<SmartCopyAnalysis> {
+  const boundaries = getInternalCutBoundaries(removeRanges, durationSec);
+  if (boundaries.length === 0) {
+    return { eligible: true, probes: [] };
+  }
+
+  const toleranceSec = getKeyframeToleranceSec(fps);
+  const probes = new Array<SmartCopyBoundaryProbe>(boundaries.length);
+
+  for (let offset = 0; offset < boundaries.length; offset += KEYFRAME_PROBE_CONCURRENCY) {
+    const batch = boundaries.slice(offset, offset + KEYFRAME_PROBE_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (boundarySec) => {
+        const keyframes = await probeKeyframesNear(inputPath, boundarySec, signal);
+        return {
+          boundarySec,
+          keyframeSec: findMatchingKeyframe(
+            boundarySec,
+            keyframes,
+            toleranceSec,
+          ),
+        } satisfies SmartCopyBoundaryProbe;
+      }),
+    );
+
+    batchResults.forEach((probe, batchIndex) => {
+      probes[offset + batchIndex] = probe;
+    });
+  }
+
+  return {
+    eligible: probes.every((probe) => probe.keyframeSec !== null),
+    probes,
+  };
+}
+
 export async function canUseSmartCopy(
   inputPath: string,
   removeRanges: TimeRange[],
@@ -116,19 +186,15 @@ export async function canUseSmartCopy(
   fps: number,
   signal: AbortSignal,
 ): Promise<boolean> {
-  const boundaries = getInternalCutBoundaries(removeRanges, durationSec);
-  if (boundaries.length === 0) return true;
-
-  const toleranceSec = getKeyframeToleranceSec(fps);
-
-  for (const boundarySec of boundaries) {
-    const keyframes = await probeKeyframesNear(inputPath, boundarySec, signal);
-    if (!isTimeAtKeyframe(boundarySec, keyframes, toleranceSec)) {
-      return false;
-    }
-  }
-
-  return true;
+  return (
+    await analyzeSmartCopyEligibility(
+      inputPath,
+      removeRanges,
+      durationSec,
+      fps,
+      signal,
+    )
+  ).eligible;
 }
 
 export async function writeSmartCopyConcatFile(

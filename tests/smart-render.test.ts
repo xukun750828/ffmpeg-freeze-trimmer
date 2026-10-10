@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSmartRenderConcatArgs,
+  buildSmartRenderConcatMuxArgs,
   buildSmartRenderConcatScript,
   buildSmartRenderEncodeArgs,
   getFrameAlignedCopyDurationSec,
@@ -157,6 +158,32 @@ describe('smart render ffmpeg plans', () => {
     expect(args).toContain('-c:a');
     expect(args).toContain('copy');
     expect(args).toContain('-video_track_timescale');
+    expect(args).toContain('30000');
+  });
+
+  it('muxes the concat plan directly with rebuilt audio without materializing video.mp4', () => {
+    const args = buildSmartRenderConcatMuxArgs(
+      'plan.ffconcat',
+      'audio.m4a',
+      'output.mp4',
+      params,
+    );
+
+    expect(args.slice(0, 10)).toEqual([
+      '-y',
+      '-hide_banner',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      'plan.ffconcat',
+      '-i',
+      'audio.m4a',
+    ]);
+    expect(args).toContain('0:v:0');
+    expect(args).toContain('1:a:0');
+    expect(args).toContain('copy');
     expect(args).toContain('30000');
   });
 

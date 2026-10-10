@@ -7,13 +7,13 @@ import { buildTrimConcatFilter } from './filter-builder';
 import { buildExportArgs, parseFfmpegOutTimeSec } from './ffmpeg-export';
 import { createExportPlan } from './range-planner';
 import {
-  canUseSmartCopy,
+  analyzeSmartCopyEligibility,
   writeSmartCopyConcatFile,
+  type SmartCopyBoundaryProbe,
 } from './smart-copy';
 import {
   buildSmartRenderAudioConcatArgs,
   buildSmartRenderAudioSegmentArgs,
-  buildSmartRenderMuxArgs,
   SMART_RENDER_AUDIO_CONCURRENCY,
   splitAudioKeepRanges,
   writeSmartRenderAudioConcatFile,
@@ -21,6 +21,7 @@ import {
 } from './smart-render-audio';
 import {
   buildSmartRenderConcatArgs,
+  buildSmartRenderConcatMuxArgs,
   buildSmartRenderEncodeArgs,
   getFrameAlignedCopyDurationSec,
   planSmartRenderRanges,
@@ -39,6 +40,13 @@ interface ExportJob {
   id: string;
   abortController: AbortController;
 }
+
+interface SmartCopyAttempt {
+  succeeded: boolean;
+  boundaryProbes: SmartCopyBoundaryProbe[];
+}
+
+const SMART_RENDER_VIDEO_ENCODE_CONCURRENCY = 2;
 
 type ProgressListener = (event: ExportProgressEvent) => void;
 type FinishedListener = (event: ExportFinishedEvent) => void;
@@ -286,21 +294,24 @@ export class VideoExporter {
     keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
     removeRanges: ReturnType<typeof createExportPlan>['removeRanges'],
     onProgress: ProgressListener,
-  ): Promise<boolean> {
+  ): Promise<SmartCopyAttempt> {
     if (request.videoCodec.toLowerCase() !== 'h264') {
-      return false;
+      return { succeeded: false, boundaryProbes: [] };
     }
 
+    let boundaryProbes: SmartCopyBoundaryProbe[] = [];
     let eligible = false;
 
     try {
-      eligible = await canUseSmartCopy(
+      const analysis = await analyzeSmartCopyEligibility(
         request.inputPath,
         removeRanges,
         request.durationSec,
         request.fps,
         job.abortController.signal,
       );
+      eligible = analysis.eligible;
+      boundaryProbes = analysis.probes;
     } catch (error) {
       if (
         job.abortController.signal.aborted ||
@@ -308,10 +319,10 @@ export class VideoExporter {
       ) {
         throw error;
       }
-      return false;
+      return { succeeded: false, boundaryProbes };
     }
 
-    if (!eligible) return false;
+    if (!eligible) return { succeeded: false, boundaryProbes };
 
     const concatPath = createConcatPlanPath(tempOutputPath);
 
@@ -339,11 +350,11 @@ export class VideoExporter {
         hasUnsafeTimestampWarnings(result.stderr)
       ) {
         await rm(tempOutputPath, { force: true }).catch(() => undefined);
-        return false;
+        return { succeeded: false, boundaryProbes };
       }
 
       await validateOutputFile(tempOutputPath);
-      return true;
+      return { succeeded: true, boundaryProbes };
     } finally {
       await rm(concatPath, { force: true }).catch(() => undefined);
     }
@@ -356,6 +367,7 @@ export class VideoExporter {
     expectedDurationSec: number,
     keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
     onProgress: ProgressListener,
+    boundaryProbes: readonly SmartCopyBoundaryProbe[] = [],
   ): Promise<boolean> {
     if (request.videoCodec.toLowerCase() !== 'h264') {
       return false;
@@ -363,7 +375,6 @@ export class VideoExporter {
 
     const workspace = createSmartRenderWorkspace(tempOutputPath);
     const concatPath = path.join(workspace, 'smart-render.ffconcat');
-    const videoPath = path.join(workspace, 'video.mp4');
     const audioPath = path.join(workspace, 'audio.m4a');
 
     try {
@@ -381,102 +392,92 @@ export class VideoExporter {
         keepRanges,
         params,
         job.abortController.signal,
+        boundaryProbes,
       );
-      const entries: SmartRenderConcatEntry[] = [];
+      const entryGroups = new Array<SmartRenderConcatEntry[]>(plans.length);
+      await runWithConcurrency(
+        plans,
+        SMART_RENDER_VIDEO_ENCODE_CONCURRENCY,
+        async (plan, index) => {
+          if (plan.mode === 'copy') {
+            entryGroups[index] = [
+              {
+                kind: 'source',
+                path: request.inputPath,
+                startSec: plan.range.startSec,
+                endSec: plan.range.endSec,
+                durationSec: getFrameAlignedCopyDurationSec(
+                  plan.range.startSec,
+                  plan.range.endSec,
+                  params.nominalFps,
+                ),
+              },
+            ];
+            return;
+          }
 
-      for (const [index, plan] of plans.entries()) {
-        if (plan.mode === 'copy') {
-          entries.push({
-            kind: 'source',
-            path: request.inputPath,
-            startSec: plan.range.startSec,
-            endSec: plan.range.endSec,
-            durationSec: getFrameAlignedCopyDurationSec(
+          const encodedPath = path.join(
+            workspace,
+            `${String(index).padStart(4, '0')}-encoded.mp4`,
+          );
+          const encodeEndSec =
+            plan.mode === 'hybrid'
+              ? plan.encodeEndSec
+              : plan.range.endSec;
+          const encodeFrameCount = plan.encodeFrameCount;
+          if (encodeFrameCount <= 0) {
+            throw new Error('SMART_RENDER_INVALID_FRAME_COUNT');
+          }
+
+          const encodeResult = await runProcess(
+            resolveFfmpegPath(),
+            buildSmartRenderEncodeArgs(
+              request.inputPath,
+              encodedPath,
               plan.range.startSec,
-              plan.range.endSec,
-              params.nominalFps,
+              encodeEndSec,
+              params,
+              false,
+              encodeFrameCount,
             ),
-          });
-          continue;
-        }
+            { signal: job.abortController.signal },
+          );
 
-        const encodedPath = path.join(
-          workspace,
-          `${String(index).padStart(4, '0')}-encoded.mp4`,
-        );
-        const encodeEndSec =
-          plan.mode === 'hybrid'
-            ? plan.encodeEndSec
-            : plan.range.endSec;
-        const encodeFrameCount = plan.encodeFrameCount;
-        if (encodeFrameCount <= 0) return false;
+          if (
+            encodeResult.exitCode !== 0 ||
+            hasUnsafeTimestampWarnings(encodeResult.stderr)
+          ) {
+            throw new Error('SMART_RENDER_VIDEO_SEGMENT_FAILED');
+          }
 
-        const encodeResult = await runProcess(
-          resolveFfmpegPath(),
-          buildSmartRenderEncodeArgs(
-            request.inputPath,
-            encodedPath,
-            plan.range.startSec,
-            encodeEndSec,
-            params,
-            false,
-            encodeFrameCount,
-          ),
-          { signal: job.abortController.signal },
-        );
+          await validateOutputFile(encodedPath);
+          const group: SmartRenderConcatEntry[] = [
+            {
+              kind: 'file',
+              path: encodedPath,
+              durationSec: encodeFrameCount / params.nominalFps,
+            },
+          ];
 
-        if (
-          encodeResult.exitCode !== 0 ||
-          hasUnsafeTimestampWarnings(encodeResult.stderr)
-        ) {
-          return false;
-        }
+          if (plan.mode === 'hybrid') {
+            group.push({
+              kind: 'source',
+              path: request.inputPath,
+              startSec: plan.copyStartSec,
+              endSec: plan.range.endSec,
+              durationSec: getFrameAlignedCopyDurationSec(
+                plan.copyStartSec,
+                plan.range.endSec,
+                params.nominalFps,
+              ),
+            });
+          }
 
-        await validateOutputFile(encodedPath);
-        entries.push({
-          kind: 'file',
-          path: encodedPath,
-          durationSec: encodeFrameCount / params.nominalFps,
-        });
-
-        if (plan.mode === 'hybrid') {
-          entries.push({
-            kind: 'source',
-            path: request.inputPath,
-            startSec: plan.copyStartSec,
-            endSec: plan.range.endSec,
-            durationSec: getFrameAlignedCopyDurationSec(
-              plan.copyStartSec,
-              plan.range.endSec,
-              params.nominalFps,
-            ),
-          });
-        }
-      }
-
-      await writeSmartRenderConcatFile(concatPath, entries);
-      const videoResult = await this.runFfmpeg(
-        job,
-        buildSmartRenderConcatArgs(
-          concatPath,
-          videoPath,
-          params,
-          false,
-        ),
-        expectedDurationSec,
-        'smart-render',
-        onProgress,
-        request.hasAudio ? [0, 0.15] : [0, 0.99],
+          entryGroups[index] = group;
+        },
       );
-
-      if (
-        videoResult.exitCode !== 0 ||
-        hasUnsafeTimestampWarnings(videoResult.stderr)
-      ) {
-        return false;
-      }
-
-      await validateOutputFile(videoPath);
+      const entries = entryGroups.flat();
+      await writeSmartRenderConcatFile(concatPath, entries);
 
       if (request.hasAudio) {
         const audioChunks = splitAudioKeepRanges(keepRanges);
@@ -517,7 +518,7 @@ export class VideoExporter {
                     expectedDurationSec,
                     'smart-render',
                     onProgress,
-                    [0.15, 0.9],
+                    [0, 0.78],
                   );
                 },
               },
@@ -547,7 +548,7 @@ export class VideoExporter {
           expectedDurationSec,
           'smart-render',
           onProgress,
-          [0.9, 0.95],
+          [0.78, 0.84],
         );
         if (
           audioResult.exitCode !== 0 ||
@@ -559,11 +560,16 @@ export class VideoExporter {
 
         const muxResult = await this.runFfmpeg(
           job,
-          buildSmartRenderMuxArgs(videoPath, audioPath, tempOutputPath),
+          buildSmartRenderConcatMuxArgs(
+            concatPath,
+            audioPath,
+            tempOutputPath,
+            params,
+          ),
           expectedDurationSec,
           'smart-render',
           onProgress,
-          [0.95, 0.99],
+          [0.84, 0.99],
         );
         if (
           muxResult.exitCode !== 0 ||
@@ -572,9 +578,26 @@ export class VideoExporter {
           return false;
         }
       } else {
-        await rename(videoPath, tempOutputPath);
+        const videoResult = await this.runFfmpeg(
+          job,
+          buildSmartRenderConcatArgs(
+            concatPath,
+            tempOutputPath,
+            params,
+            false,
+          ),
+          expectedDurationSec,
+          'smart-render',
+          onProgress,
+          [0, 0.99],
+        );
+        if (
+          videoResult.exitCode !== 0 ||
+          hasUnsafeTimestampWarnings(videoResult.stderr)
+        ) {
+          return false;
+        }
       }
-
       await validateOutputFile(tempOutputPath);
 
       const actualDurationSec = await probeOutputDurationSec(
@@ -656,7 +679,7 @@ export class VideoExporter {
     let strategy: ExportStrategy = 'reencode';
 
     try {
-      const smartCopySucceeded = await this.trySmartCopy(
+      const smartCopyAttempt = await this.trySmartCopy(
         job,
         request,
         tempOutputPath,
@@ -666,7 +689,7 @@ export class VideoExporter {
         onProgress,
       );
 
-      if (smartCopySucceeded) {
+      if (smartCopyAttempt.succeeded) {
         strategy = 'smart-copy';
       } else {
         await rm(tempOutputPath, { force: true }).catch(() => undefined);
@@ -678,6 +701,7 @@ export class VideoExporter {
           expectedDurationSec,
           keepRanges,
           onProgress,
+          smartCopyAttempt.boundaryProbes,
         );
 
         if (smartRenderSucceeded) {

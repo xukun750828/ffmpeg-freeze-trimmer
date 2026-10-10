@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSmartCopyConcatScript,
+  findMatchingKeyframe,
   getInternalCutBoundaries,
   getKeyframeToleranceSec,
   isTimeAtKeyframe,
@@ -37,6 +38,11 @@ describe('smart copy planning', () => {
   it('accepts a boundary only when a keyframe is close enough', () => {
     expect(isTimeAtKeyframe(996.8, [991.766633, 996.8], 0.02)).toBe(true);
     expect(isTimeAtKeyframe(996.75, [996.8], 0.02)).toBe(false);
+  });
+
+  it('returns the nearest matching keyframe for reuse by smart render', () => {
+    expect(findMatchingKeyframe(996.8, [996.79, 996.8, 996.81], 0.02)).toBe(996.8);
+    expect(findMatchingKeyframe(996.75, [996.8], 0.02)).toBeNull();
   });
 
   it('builds a direct concat plan without intermediate media files', () => {
