@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSmartRenderAudioConcatArgs,
   buildSmartRenderAudioConcatScript,
+  buildSmartRenderAudioCopySegmentArgs,
   buildSmartRenderAudioSegmentArgs,
   buildSmartRenderMuxArgs,
   splitAudioKeepRanges,
@@ -28,6 +29,23 @@ describe('smart render audio planning', () => {
     expect(
       chunks.reduce((sum, range) => sum + range.endSec - range.startSec, 0),
     ).toBe(3800);
+  });
+
+  it('copies AAC packets into timestamp-reset MPEG-TS segments for the fast path', () => {
+    const args = buildSmartRenderAudioCopySegmentArgs(
+      'input.mp4',
+      'segment.ts',
+      { startSec: 1000.456, endSec: 1010 },
+    );
+
+    expect(args).toContain('-c:a');
+    expect(args).toContain('copy');
+    expect(args).toContain('-avoid_negative_ts');
+    expect(args).toContain('make_zero');
+    expect(args).toContain('-muxdelay');
+    expect(args).toContain('mpegts');
+    expect(args).toContain('9.544');
+    expect(args.at(-1)).toBe('segment.ts');
   });
 
   it('encodes each audio chunk with the fast AAC coder into MPEG-TS', () => {

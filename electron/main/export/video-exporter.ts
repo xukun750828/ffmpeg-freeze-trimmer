@@ -13,8 +13,11 @@ import {
 } from './smart-copy';
 import {
   buildSmartRenderAudioConcatArgs,
+  buildSmartRenderAudioCopySegmentArgs,
   buildSmartRenderAudioSegmentArgs,
   SMART_RENDER_AUDIO_CONCURRENCY,
+  SMART_RENDER_AUDIO_COPY_CONCURRENCY,
+  SMART_RENDER_AUDIO_COPY_MAX_DRIFT_SEC,
   splitAudioKeepRanges,
   writeSmartRenderAudioConcatFile,
   type SmartRenderAudioSegment,
@@ -360,6 +363,133 @@ export class VideoExporter {
     }
   }
 
+  private async trySmartRenderAudioCopy(
+    job: ExportJob,
+    request: ExportRequest,
+    workspace: string,
+    audioPath: string,
+    expectedDurationSec: number,
+    keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
+    onProgress: ProgressListener,
+  ): Promise<boolean> {
+    if (request.audioCodec?.toLowerCase() !== 'aac') {
+      return false;
+    }
+
+    const segmentPaths: string[] = [];
+    const concatPath = path.join(workspace, 'audio-copy.ffconcat');
+
+    const cleanupFastAudio = async (): Promise<void> => {
+      await Promise.all([
+        rm(audioPath, { force: true }).catch(() => undefined),
+        rm(concatPath, { force: true }).catch(() => undefined),
+        ...segmentPaths.map((segmentPath) =>
+          rm(segmentPath, { force: true }).catch(() => undefined),
+        ),
+      ]);
+    };
+
+    try {
+      const segments = new Array<SmartRenderAudioSegment>(keepRanges.length);
+      const progressSec = new Array<number>(keepRanges.length).fill(0);
+
+      await runWithConcurrency(
+        keepRanges,
+        SMART_RENDER_AUDIO_COPY_CONCURRENCY,
+        async (range, index) => {
+          const segmentPath = path.join(
+            workspace,
+            `audio-copy-${String(index).padStart(4, '0')}.ts`,
+          );
+          segmentPaths.push(segmentPath);
+          const durationSec = range.endSec - range.startSec;
+          const result = await runProcess(
+            resolveFfmpegPath(),
+            buildSmartRenderAudioCopySegmentArgs(
+              request.inputPath,
+              segmentPath,
+              range,
+            ),
+            {
+              signal: job.abortController.signal,
+              onStdoutLine: (line) => {
+                const outTimeSec = parseFfmpegOutTimeSec(line);
+                if (outTimeSec === null) return;
+                progressSec[index] = Math.min(durationSec, outTimeSec);
+                const completedSec = progressSec.reduce(
+                  (sum, value) => sum + value,
+                  0,
+                );
+                this.emitProgress(
+                  job,
+                  completedSec,
+                  expectedDurationSec,
+                  'smart-render',
+                  onProgress,
+                  [0, 0.05],
+                );
+              },
+            },
+          );
+
+          if (
+            result.exitCode !== 0 ||
+            hasUnsafeTimestampWarnings(result.stderr)
+          ) {
+            throw new Error('SMART_RENDER_AUDIO_COPY_SEGMENT_FAILED');
+          }
+
+          await validateOutputFile(segmentPath);
+          progressSec[index] = durationSec;
+          segments[index] = { path: segmentPath, durationSec };
+        },
+      );
+
+      await writeSmartRenderAudioConcatFile(concatPath, segments);
+      const concatResult = await this.runFfmpeg(
+        job,
+        buildSmartRenderAudioConcatArgs(concatPath, audioPath),
+        expectedDurationSec,
+        'smart-render',
+        onProgress,
+        [0.05, 0.2],
+      );
+      if (
+        concatResult.exitCode !== 0 ||
+        hasUnsafeTimestampWarnings(concatResult.stderr)
+      ) {
+        await cleanupFastAudio();
+        return false;
+      }
+
+      await validateOutputFile(audioPath);
+      const actualDurationSec = await probeOutputDurationSec(
+        audioPath,
+        job.abortController.signal,
+      );
+      if (
+        actualDurationSec === null ||
+        Math.abs(actualDurationSec - expectedDurationSec) >
+          SMART_RENDER_AUDIO_COPY_MAX_DRIFT_SEC
+      ) {
+        await cleanupFastAudio();
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      if (
+        job.abortController.signal.aborted ||
+        (error instanceof Error && error.message === 'PROCESS_ABORTED')
+      ) {
+        throw error;
+      }
+
+      await cleanupFastAudio();
+      return false;
+    }
+  }
+
   private async trySmartRender(
     job: ExportJob,
     request: ExportRequest,
@@ -480,83 +610,95 @@ export class VideoExporter {
       await writeSmartRenderConcatFile(concatPath, entries);
 
       if (request.hasAudio) {
-        const audioChunks = splitAudioKeepRanges(keepRanges);
-        const audioSegments = new Array<SmartRenderAudioSegment>(
-          audioChunks.length,
-        );
-        const audioProgressSec = new Array<number>(audioChunks.length).fill(0);
-
-        await runWithConcurrency(
-          audioChunks,
-          SMART_RENDER_AUDIO_CONCURRENCY,
-          async (range, index) => {
-            const segmentPath = path.join(
-              workspace,
-              `audio-${String(index).padStart(4, '0')}.ts`,
-            );
-            const durationSec = range.endSec - range.startSec;
-            const result = await runProcess(
-              resolveFfmpegPath(),
-              buildSmartRenderAudioSegmentArgs(
-                request.inputPath,
-                segmentPath,
-                range,
-              ),
-              {
-                signal: job.abortController.signal,
-                onStdoutLine: (line) => {
-                  const outTimeSec = parseFfmpegOutTimeSec(line);
-                  if (outTimeSec === null) return;
-                  audioProgressSec[index] = Math.min(durationSec, outTimeSec);
-                  const completedSec = audioProgressSec.reduce(
-                    (sum, value) => sum + value,
-                    0,
-                  );
-                  this.emitProgress(
-                    job,
-                    completedSec,
-                    expectedDurationSec,
-                    'smart-render',
-                    onProgress,
-                    [0, 0.78],
-                  );
-                },
-              },
-            );
-
-            if (
-              result.exitCode !== 0 ||
-              hasUnsafeTimestampWarnings(result.stderr)
-            ) {
-              throw new Error('SMART_RENDER_AUDIO_SEGMENT_FAILED');
-            }
-
-            await validateOutputFile(segmentPath);
-            audioProgressSec[index] = durationSec;
-            audioSegments[index] = { path: segmentPath, durationSec };
-          },
-        );
-
-        const audioConcatPath = path.join(workspace, 'audio.ffconcat');
-        await writeSmartRenderAudioConcatFile(
-          audioConcatPath,
-          audioSegments,
-        );
-        const audioResult = await this.runFfmpeg(
+        const fastAudioSucceeded = await this.trySmartRenderAudioCopy(
           job,
-          buildSmartRenderAudioConcatArgs(audioConcatPath, audioPath),
+          request,
+          workspace,
+          audioPath,
           expectedDurationSec,
-          'smart-render',
+          keepRanges,
           onProgress,
-          [0.78, 0.84],
         );
-        if (
-          audioResult.exitCode !== 0 ||
-          hasUnsafeTimestampWarnings(audioResult.stderr)
-        ) {
-          return false;
+
+        if (!fastAudioSucceeded) {
+          const audioChunks = splitAudioKeepRanges(keepRanges);
+          const audioSegments = new Array<SmartRenderAudioSegment>(
+            audioChunks.length,
+          );
+          const audioProgressSec = new Array<number>(audioChunks.length).fill(0);
+
+          await runWithConcurrency(
+            audioChunks,
+            SMART_RENDER_AUDIO_CONCURRENCY,
+            async (range, index) => {
+              const segmentPath = path.join(
+                workspace,
+                `audio-${String(index).padStart(4, '0')}.ts`,
+              );
+              const durationSec = range.endSec - range.startSec;
+              const result = await runProcess(
+                resolveFfmpegPath(),
+                buildSmartRenderAudioSegmentArgs(
+                  request.inputPath,
+                  segmentPath,
+                  range,
+                ),
+                {
+                  signal: job.abortController.signal,
+                  onStdoutLine: (line) => {
+                    const outTimeSec = parseFfmpegOutTimeSec(line);
+                    if (outTimeSec === null) return;
+                    audioProgressSec[index] = Math.min(durationSec, outTimeSec);
+                    const completedSec = audioProgressSec.reduce(
+                      (sum, value) => sum + value,
+                      0,
+                    );
+                    this.emitProgress(
+                      job,
+                      completedSec,
+                      expectedDurationSec,
+                      'smart-render',
+                      onProgress,
+                      [0.2, 0.82],
+                    );
+                  },
+                },
+              );
+
+              if (
+                result.exitCode !== 0 ||
+                hasUnsafeTimestampWarnings(result.stderr)
+              ) {
+                throw new Error('SMART_RENDER_AUDIO_SEGMENT_FAILED');
+              }
+
+              await validateOutputFile(segmentPath);
+              audioProgressSec[index] = durationSec;
+              audioSegments[index] = { path: segmentPath, durationSec };
+            },
+          );
+
+          const audioConcatPath = path.join(workspace, 'audio.ffconcat');
+          await writeSmartRenderAudioConcatFile(
+            audioConcatPath,
+            audioSegments,
+          );
+          const audioResult = await this.runFfmpeg(
+            job,
+            buildSmartRenderAudioConcatArgs(audioConcatPath, audioPath),
+            expectedDurationSec,
+            'smart-render',
+            onProgress,
+            [0.82, 0.87],
+          );
+          if (
+            audioResult.exitCode !== 0 ||
+            hasUnsafeTimestampWarnings(audioResult.stderr)
+          ) {
+            return false;
+          }
+          await validateOutputFile(audioPath);
         }
-        await validateOutputFile(audioPath);
 
         const muxResult = await this.runFfmpeg(
           job,
@@ -569,7 +711,7 @@ export class VideoExporter {
           expectedDurationSec,
           'smart-render',
           onProgress,
-          [0.84, 0.99],
+          fastAudioSucceeded ? [0.2, 0.99] : [0.87, 0.99],
         );
         if (
           muxResult.exitCode !== 0 ||

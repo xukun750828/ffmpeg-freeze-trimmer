@@ -4,6 +4,8 @@ import type { TimeRange } from './types';
 
 export const SMART_RENDER_AUDIO_CHUNK_SEC = 30 * 60;
 export const SMART_RENDER_AUDIO_CONCURRENCY = 4;
+export const SMART_RENDER_AUDIO_COPY_CONCURRENCY = 4;
+export const SMART_RENDER_AUDIO_COPY_MAX_DRIFT_SEC = 0.05;
 
 export interface SmartRenderAudioSegment {
   path: string;
@@ -39,6 +41,38 @@ export function splitAudioKeepRanges(
   }
 
   return chunks;
+}
+
+export function buildSmartRenderAudioCopySegmentArgs(
+  inputPath: string,
+  outputPath: string,
+  range: TimeRange,
+): string[] {
+  const durationSec = Math.max(0, range.endSec - range.startSec);
+
+  return [
+    '-y',
+    '-hide_banner',
+    '-ss',
+    formatTimestamp(range.startSec),
+    '-i',
+    inputPath,
+    '-t',
+    formatTimestamp(durationSec),
+    '-vn',
+    '-c:a',
+    'copy',
+    '-avoid_negative_ts',
+    'make_zero',
+    '-muxdelay',
+    '0',
+    '-f',
+    'mpegts',
+    '-progress',
+    'pipe:1',
+    '-nostats',
+    outputPath,
+  ];
 }
 
 export function buildSmartRenderAudioSegmentArgs(
