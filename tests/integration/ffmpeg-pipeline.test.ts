@@ -1,11 +1,15 @@
 // @vitest-environment node
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildTrimConcatFilter } from '../../electron/main/export/filter-builder';
-import { buildExportArgs } from '../../electron/main/export/ffmpeg-export';
+import {
+  buildExportArgs,
+  buildPreciseReencodeArgs,
+  buildPreciseReencodeConcatScript,
+} from '../../electron/main/export/ffmpeg-export';
 import { createExportPlan } from '../../electron/main/export/range-planner';
 import {
   detectFreezes,
@@ -477,6 +481,52 @@ describe('real FFmpeg pipeline', () => {
       expect(exported.hasAudio).toBe(true);
       expect(exported.durationSec).toBeGreaterThan(1.8);
       expect(exported.durationSec).toBeLessThan(2.3);
+    },
+    30_000,
+  );
+
+  it(
+    'precise reencode handles multiple keep ranges through concatdec_select',
+    async () => {
+      const inputPath = path.join(tempDir, 'multi-range-source.mp4');
+      const concatPath = path.join(tempDir, 'multi-range.ffconcat');
+      const outputPath = path.join(tempDir, 'multi-range-output.mp4');
+      await createSyntheticInput(inputPath, true);
+
+      const source = await probeMedia(inputPath);
+      const plan = createExportPlan(
+        [
+          { startSec: 1, endSec: 2 },
+          { startSec: 3, endSec: 4 },
+        ],
+        source.durationSec,
+      );
+
+      await writeFile(
+        concatPath,
+        buildPreciseReencodeConcatScript(inputPath, plan.keepRanges),
+        'utf8',
+      );
+      const exportResult = await runProcess(
+        process.env.FFMPEG_PATH || 'ffmpeg',
+        buildPreciseReencodeArgs(
+          concatPath,
+          outputPath,
+          source.hasAudio,
+        ),
+      );
+
+      expect(exportResult.exitCode).toBe(0);
+      expect(exportResult.stderr).not.toMatch(/More than \d+ frames duplicated/i);
+
+      const exported = await probeMedia(outputPath);
+      expect(exported.hasAudio).toBe(true);
+      expect(exported.durationSec).toBeGreaterThan(
+        plan.outputDurationSec - 0.1,
+      );
+      expect(exported.durationSec).toBeLessThan(
+        plan.outputDurationSec + 0.1,
+      );
     },
     30_000,
   );

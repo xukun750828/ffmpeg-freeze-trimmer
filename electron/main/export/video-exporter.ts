@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { access, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveFfmpegPath, resolveFfprobePath } from '../ffmpeg-paths';
 import { runProcess } from '../process/process-runner';
-import { buildTrimConcatFilter } from './filter-builder';
-import { buildExportArgs, parseFfmpegOutTimeSec } from './ffmpeg-export';
+import {
+  buildPreciseReencodeArgs,
+  buildPreciseReencodeConcatScript,
+  parseFfmpegOutTimeSec,
+} from './ffmpeg-export';
 import { createExportPlan } from './range-planner';
 import {
   analyzeSmartCopyEligibility,
@@ -785,30 +788,54 @@ export class VideoExporter {
     keepRanges: ReturnType<typeof createExportPlan>['keepRanges'],
     onProgress: ProgressListener,
   ): Promise<void> {
-    const graph = buildTrimConcatFilter(keepRanges, request.hasAudio);
-    const args = buildExportArgs(
-      request.inputPath,
-      tempOutputPath,
-      graph,
-      request.hasAudio,
-    );
+    const concatPath = `${tempOutputPath}.precise.ffconcat`;
 
-    const result = await this.runFfmpeg(
-      job,
-      args,
-      expectedDurationSec,
-      'reencode',
-      onProgress,
-    );
+    try {
+      await writeFile(
+        concatPath,
+        buildPreciseReencodeConcatScript(request.inputPath, keepRanges),
+        'utf8',
+      );
 
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr.trim() || 'EXPORT_FAILED');
+      const result = await this.runFfmpeg(
+        job,
+        buildPreciseReencodeArgs(
+          concatPath,
+          tempOutputPath,
+          request.hasAudio,
+        ),
+        expectedDurationSec,
+        'reencode',
+        onProgress,
+      );
+
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.trim() || 'EXPORT_FAILED');
+      }
+
+      const duplicatedFrames = [
+        ...result.stderr.matchAll(/More than (\d+) frames duplicated/gi),
+      ].reduce((max, match) => Math.max(max, Number(match[1]) || 0), 0);
+      if (duplicatedFrames >= 1000) {
+        throw new Error('PRECISE_REENCODE_EXCESSIVE_FRAME_DUPLICATION');
+      }
+
+      await validateOutputFile(tempOutputPath);
+      const actualDurationSec = await probeOutputDurationSec(
+        tempOutputPath,
+        job.abortController.signal,
+      );
+      const allowedDriftSec = Math.max(0.5, keepRanges.length * 0.02);
+      if (
+        actualDurationSec === null ||
+        Math.abs(actualDurationSec - expectedDurationSec) > allowedDriftSec
+      ) {
+        throw new Error('PRECISE_REENCODE_DURATION_MISMATCH');
+      }
+    } finally {
+      await rm(concatPath, { force: true }).catch(() => undefined);
     }
-
-    await validateOutputFile(tempOutputPath);
-  }
-
-  private async execute(
+  }  private async execute(
     job: ExportJob,
     request: ExportRequest,
     tempOutputPath: string,

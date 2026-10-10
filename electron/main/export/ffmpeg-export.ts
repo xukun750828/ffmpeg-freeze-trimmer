@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { FilterGraph } from './filter-builder';
 import type { TimeRange } from './types';
 
@@ -40,6 +41,8 @@ export function buildExportArgs(
   }
 
   args.push(
+    '-fps_mode',
+    'passthrough',
     '-movflags',
     '+faststart',
     '-progress',
@@ -51,6 +54,97 @@ export function buildExportArgs(
   return args;
 }
 
+function escapeConcatPath(inputPath: string): string {
+  const normalized = path.resolve(inputPath).replace(/\\/g, '/');
+  return normalized.replace(/'/g, "'\\''");
+}
+
+export function buildPreciseReencodeConcatScript(
+  inputPath: string,
+  keepRanges: readonly TimeRange[],
+): string {
+  const escapedPath = escapeConcatPath(inputPath);
+  const lines = ['ffconcat version 1.0'];
+
+  for (const range of keepRanges) {
+    const durationSec = Math.max(0, range.endSec - range.startSec);
+    if (durationSec <= 0) continue;
+
+    lines.push(`file '${escapedPath}'`);
+    if (range.startSec > 0) {
+      lines.push(`inpoint ${formatTimestamp(range.startSec)}`);
+    }
+    lines.push(`outpoint ${formatTimestamp(range.endSec)}`);
+    lines.push(`duration ${formatTimestamp(durationSec)}`);
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+export function buildPreciseReencodeArgs(
+  concatPath: string,
+  outputPath: string,
+  hasAudio: boolean,
+): string[] {
+  const args = [
+    '-y',
+    '-hide_banner',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-segment_time_metadata',
+    '1',
+    '-i',
+    concatPath,
+    '-map',
+    '0:v:0',
+  ];
+
+  if (hasAudio) {
+    args.push('-map', '0:a:0?');
+  }
+
+  args.push(
+    '-vf',
+    'select=concatdec_select,setpts=PTS-STARTPTS',
+  );
+
+  if (hasAudio) {
+    args.push(
+      '-af',
+      'aselect=concatdec_select,asetpts=PTS-STARTPTS',
+    );
+  }
+
+  args.push(
+    '-c:v',
+    'libx264',
+    '-crf',
+    '18',
+    '-preset',
+    'medium',
+    '-fps_mode',
+    'passthrough',
+  );
+
+  if (hasAudio) {
+    args.push('-c:a', 'aac', '-b:a', '192k');
+  }
+
+  args.push(
+    '-avoid_negative_ts',
+    'make_zero',
+    '-movflags',
+    '+faststart',
+    '-progress',
+    'pipe:1',
+    '-nostats',
+    outputPath,
+  );
+
+  return args;
+}
 export function parseFfmpegOutTimeSec(line: string): number | null {
   if (line.startsWith('out_time_us=')) {
     const value = Number(line.slice('out_time_us='.length));
